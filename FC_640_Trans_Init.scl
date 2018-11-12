@@ -112,7 +112,7 @@ TMP_Cfg := _Cfg;
 VerGes := (ST_BA.K23_BaHand AND VerHand) OR VerAuto;
 
 (*Freigabe Transition*)
-
+// 释放跳转, 自动条件 & 跳转条件
 FrgTrans := VerAuto AND TransBed ;
 
 (*Freigabe Zutrittsanforderung**************************************************)
