@@ -1,0 +1,140 @@
+(*****************************************************************************************
+**                                                                                      **
+**  Copyright ® 2011            SIEMENS AG I IA&DT, D-90475 Nuernberg                   **
+**  All Rights Reserved         VOLKSWAGEN AG, 38436 Wolfsburg                          **
+**                              AUDI AG, D-85045 Ingolstadt                             **
+**                                                                                      **
+******************************************************************************************
+**                                                                                      **
+** Aenderungsjournal  :                                                                  **
+******************************************************************************************
+** Datum    Version        Autor        Beschreibung                                    **
+------------------------------------------------------------------------------------------
+ 26.09.14    3.2.02        Hennig       Nicht benutzte Variable Temp geloescht
+ 30.10.12    3.2.01        Maletz       Namen und Family der Funktion angepasst
+ 23.04.11    3.2.00        Maletz       Teachmodus und Zeitliche ueberwachung des Schrittes
+                                        angepasst 
+ 08.02.11    3.1.00        Meyer        Fehlerbeseitigung Freigabe Zutrittsanforderung
+ 25.01.11    3.0           Meyer        Neuerstellung
+*****************************************************************************************)
+FUNCTION FC_Trans_Init : VOID  // FC 640
+TITLE   = 'Version 3.2.02'
+VERSION : '3.2'
+AUTHOR  : VASS_V05
+NAME    : TRANS_IN
+FAMILY  : TRANS_IN
+
+VAR_INPUT
+    VerHand     :   BOOL; // Verriegelungsbedingungen Handbetrieb 
+    VerAuto     :   BOOL; // Verriegelungsbedingungen Automatikbetrieb 
+    TransBed    :   BOOL; // Transitionsbedingungen fuer den Schritt 
+    _Cfg        :   WORD; // Cfg.X0 = True -> Warteschritt mit Zeitueberwachung, Cfg.X1 = True -> kein Halt in diesem Schritt 
+    Schritt  :  STRUCT            
+        S1          : BOOL;
+        L1          : BOOL;
+        V1          : BOOL;
+        R1          : BOOL;
+        A1          : BOOL;
+        S0          : BOOL;
+        L0          : BOOL;
+        V0          : BOOL;
+        X           : BOOL;
+        LA          : BOOL;
+        VA          : BOOL;
+        RA          : BOOL;
+        AA          : BOOL;
+        SS          : BOOL;
+        LS          : BOOL;
+        VS          : BOOL;
+        SNO         : INT;
+        T           : TIME;
+        U           : TIME;
+        CRIT_LOC    : DWORD;
+        CRIT_LOC_ERR: DWORD;
+        CRIT_SUP    : DWORD;
+        SM          : BOOL;
+        LP          : BOOL;
+        _LN         : BOOL;
+        VP          : BOOL;
+        VN          : BOOL;
+        H_IL_ERR    : BYTE;
+        H_SV_FLT    : BYTE;
+        RESERVED    : DWORD;
+    END_STRUCT; 
+    TUe_S       :   TIME := TIME#0s;
+END_VAR
+
+
+VAR_OUTPUT
+    VerGes   :    BOOL; // Verriegelung gesamt 
+    FrgTrans :    BOOL; // Freigabe Transition 
+    SNO_T_Aktuell : TIME;
+    SNO_T_Gespeichert : TIME;
+END_VAR
+
+
+VAR_IN_OUT
+    MOP_HALT :    BOOL;
+    SNO_Time :    TIME ; 
+    ST_BA    :    ST_Betriebsarten; // Betriebsartenstruktur 
+END_VAR
+
+
+VAR_TEMP
+TMP_Cfg : WORD;
+(**SIEMENS********************Anfang Variablendeklaration*************************************)
+(***********fuer bit-, byte-, wordgranulare Sicht von Variablen mit dem AT-Befehl**************)
+Cfg AT TMP_Cfg: STRUCT        // WORD -> BOOL
+    X8      : BOOL ;
+    X9      : BOOL ;
+    X10     : BOOL ;
+    X11     : BOOL ;
+    X12     : BOOL ;
+    X13     : BOOL ;
+    X14     : BOOL ;
+    X15     : BOOL ;
+    X0      : BOOL ;
+    X1      : BOOL ;
+    X2      : BOOL ;
+    X3      : BOOL ;
+    X4      : BOOL ;    
+    X5      : BOOL ;
+    X6      : BOOL ;
+    X7      : BOOL ;
+END_STRUCT;
+(**SIEMENS**********************Ende Variablendeklaration*************************************)
+(***********fuer bit-, byte-, wordgranulare Sicht von Variablen mit dem AT-Befehl**************)
+END_VAR
+TMP_Cfg := _Cfg;
+
+(*Transitionsueberwachungsbaustein***********************************************)
+(* Freigabe Verriegelung*)
+VerGes := (ST_BA.K23_BaHand AND VerHand) OR VerAuto;
+
+(*Freigabe Transition*)
+
+FrgTrans := VerAuto AND TransBed ;
+
+(*Freigabe Zutrittsanforderung**************************************************)
+(*Ruecksetzen wenn Schritt noch aktiv oder "Kein Halt in diesem Schritt" *)
+
+(*Teachmodus um die Schrittdauer zu ermitteln***********************************)
+IF Teach_Time_SK AND Schritt.S0 AND TransBed THEN // Wenn Teachmodus aktiviert wurde und der Schritt und die nachgeschaltete Transition
+    SNO_Time := Schritt.T ;                      // aktiv sind dann wird die Schrittzeit gespeichert
+END_IF; 
+
+IF (Schritt.X AND ST_BA.K90_AnfoZutritt) THEN 
+        MOP_HALT := true;
+END_IF;
+
+IF (Schritt.X AND NOT ST_BA.K90_AnfoZutritt) THEN 
+        MOP_HALT := false;
+END_IF;
+
+
+(*Ausgaben schreiben************************************************************)
+SNO_T_Gespeichert := SNO_Time;
+
+SNO_T_Aktuell := Schritt.T;
+
+END_FUNCTION
