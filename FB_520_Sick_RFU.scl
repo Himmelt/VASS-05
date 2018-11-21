@@ -1,0 +1,1328 @@
+(****************************************************************************************
+**                                                                                     **
+**  Copyright ® 2011            SIEMENS AG I IA&DT, D-90475 Nuernberg                  **
+**  All Rights Reserved         VOLKSWAGEN AG, 38436 Wolfsburg                         **
+**                              AUDI AG, D-85045 Ingolstadt                            **
+**                                                                                     **
+*****************************************************************************************
+**                                                                                     **
+** Aenderungsjournal  :                                                                **
+*****************************************************************************************
+**  Datum         Version     Autor       Beschreibung                                 **
+-----------------------------------------------------------------------------------------
+    22.01.2015    3.9.04      Schulz      Umlaute entfernt
+    18.09.2014    3.9.04      Hennig      Kommentar Meldeklassen angepasst
+    15.09.2014    3.9.03      Lohrenz     Meldung "ohne Prozess" hinzugefuegt 
+    10.09.2014    3.9.02      Lohrenz     Automatische Verbindungswiederherstellung 
+                                          Umstellung KWE7 auf SWE7 fuer Reset
+                                          Bei Reset wird der Buffer sowie die Anzeige der
+                                          Daten geloescht desweiteren wird FM_Lesen und 
+                                          FM_Schreiben auf False gesetzt
+    20.09.2013    3.9.01      Maletz      PC-Wort beim Kommando Schreiben angepasst (7DA1,79A1)
+    08.02.2013    3.9.00      Lohrenz     OUTPUT Data_UII von Struktur auf Array geaendert
+                                          Umkopieren auf Struktur UII ist jetzt im
+                                          Typauswertebaustein.                                     
+    22.10.2012    3.8.00      Maletz      neue Fehlermeldung "Read Error"  
+    10.10.2012    3.7.00      Maletz      div.Anpassungen  
+    10.09.2012    3.6.00      Maletz      Warte auf "GateOff" angepasst/geloescht
+                                          Cfg.X1 Neu Lesen Wiederholung bei Fehler  
+    06.09.2012    3.5.01      Jablonski   Zeichen "NULL" (Byte#16#00)im strVisuText2, 
+                                          strVisuText4 ersetzt durch "Leerzeichen" (Byte#16#20)
+                                          Fehler bei der USER-Darstellung in der VISU behoben                                          
+    10.08.2012    3.5.00      Maletz      Loeschen Taktkontrollen bei Neustart angepasst
+    11.06.2012    3.4.01      Maletz      local_device_id wird aus Verbindung Datenbaustein
+                                          uebernommen  
+    21.05.2012    3.4.00      Maletz      "Vorwahl Ohne" auch bei Stoerung moeglich
+                                          Cfg.X0 Lesen extern "Gate Off" ueber interne Zeit  
+    10.04.2012    3.3.00      Maletz      setzten Taktkontrolle bei "PoT" und
+                                          "Vorwahl Ohne" angepasst
+    27.02.2012    3.2.00      Maletz      Verbindungsaufbau angepasst
+    31.01.2012    3.1.00      Maletz      div.Anpassungen
+    18.11.2011    3.0.00      Meyer       Neuerstellung
+****************************************************************************************)
+FUNCTION_BLOCK FB_Sick_RFU    // FB520
+TITLE   = 'Version 3.9.04'
+VERSION : '3.9'
+AUTHOR  : VASS_V05
+NAME    : SICKRFU
+FAMILY  : SICKRFU
+
+
+VAR_INPUT
+   Frg_oProz    : BOOL;         // Freigabe Vorwahl ohne Prozess
+   Ver_Lesen    : BOOL;         // Verriegelung Lesen
+   Ver_Schreiben: BOOL;         // Verriegelung Schreiben 
+   Lesen        : BOOL;         // Lesen extern pos.Flanke Start Tag lesen -> neg.Flanke Uebergabe Tag Daten   
+   Schreiben    : BOOL;         // Start Schreiben extern
+   StartAdd     : INT:= 0;      // Start Wort beim Schreiben auf Datentraeger
+   Laenge       : INT:= 32;     // Anzahl Worte beim Schreiben auf Datentraeger       
+   FM_Reset     : BOOL;         // Taktkontrolle abloeschen
+   ZUeGes       : TIME:= T#10s; // Timeout Schreib/Lesevorgang
+   VerbID : STRUCT              //TCP-native Kopplung 
+        ID : INT;                   //Verbindungsidentifikationsnummer
+        DeviceID : INT;             //2= CPU31x(F)-2PN/DP; 3=CPU319(F)-3PN/DP; 5= CPU41x(F)-xPN/DP
+        IP : ARRAY[1 .. 4 ] OF INT; //Partner IP Adresse
+        lokalPort : INT;            //eigene Portnummer (2000 ... 5000)
+        remotePort : INT ;          //nicht relevant
+        lokalTSAP : STRUCT          //nicht relevant
+             Rack : BYTE ;          //nicht relevant
+             Steckplatz : BYTE ;    //nicht relevant
+             TSAP : STRING  [14 ];  //nicht relevant
+        END_STRUCT ;    
+        remoteTSAP : STRING  [16 ]; //nicht relevant
+   END_STRUCT ;    
+   _Cfg :    WORD;// X0:Lesen extern "Gate Off" ueber interne Zeit, X1:Lesen Wiederholung bei Fehler 
+        Cfg AT _Cfg: STRUCT        // WORD -> BOOL
+            X8  : BOOL ;
+            X9  : BOOL ;
+            X10 : BOOL ;
+            X11 : BOOL ;
+            X12 : BOOL ;
+            X13 : BOOL ;
+            X14 : BOOL ;
+            X15 : BOOL ;
+            X0  : BOOL ;    // Lesen extern "Gate Off" ueber interne Zeit
+            X1  : BOOL ;    // Lesen Wiederholung bei Fehler    
+            X2  : BOOL ;
+            X3  : BOOL ;
+            X4  : BOOL ;    
+            X5  : BOOL ;
+            X6  : BOOL ;
+            X7  : BOOL ;
+        END_STRUCT;
+    VkStoe_In   : BOOL;             // Verkettete Stoerung 
+END_VAR
+
+VAR_OUTPUT
+    oProz       : BOOL;                     // Vorwahl Ohne Prozess
+    Data_UII    : ARRAY [1..30] OF BYTE ;   // ARRAY UII
+    FM_Lesen    : BOOL;                     // Lesen abgeschlossen
+    FM_Schreiben: BOOL;                     // Schreiben abgeschlossen
+    BUSY        : BOOL;                     // Schreiben/Lesen aktiv
+    Stoe        : BOOL;                     // Sammelstoerung 
+    VkStoe_Out  : BOOL;                     // Verkettete Stoerung 
+END_VAR
+
+VAR_IN_OUT
+    ST_RFU_DATA : ST_RFU_DATA;      // Empfangs- und Sendefach
+    ST_BA       : ST_Betriebsarten; // Betriebsartenstruktur 
+    ST_Meld     : Meldungspuffer;   // Meldestruktur
+END_VAR
+
+VAR_Temp
+
+    TempPointerMsys                 :ANY;// Hilfsvariable
+    TempPointerFlanken              :ANY;// Hilfsvariable
+    TempPointerMeldpuffer           :ANY;// Hilfsvariable
+    erg_SFC20                       :INT;// Rueckgabewert SFC20
+    
+    pMeldFeld AT TempPointerMsys: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT; 
+                               
+                               
+    pMeldAbb AT TempPointerFlanken: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT;
+                               
+    
+    pMeldDBNR AT TempPointerMeldpuffer: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT;
+                               
+    i           : INT;       // Loop variable
+    j           : INT;       // Loop variable
+    Address     : INT;       // Temporarily address
+    Temp        : INT;       // Temporarily variable
+    Start_Adr   : INT;       // Start address
+ END_VAR
+
+
+VAR
+    _dwVisuWerte1 : DWORD  ;        // z.B. IP 192.168.0.30  = DWORD#16#C0A8001E 
+    _dwVisuWerte2 : DWORD  ;        // low_Word = Port 
+    _dwVisuWerte3 : DWORD  ;        // low_Word = Fehlernummer ,high-Word = ... 
+    _dwVisuWerte4 : DWORD  ;        // Statusdoppelword an VISU 
+    _dwVisuWerte5 : DWORD  ;        // Byte0=StartAdd, Byte1=Laenge, Byte2=EndAdd 
+    strVisuText1  : STRING[64];     // UII Bereich Lesen 
+    strVisuText2  : STRING[64];     // User Bereich Lesen 
+    strVisuText3  : STRING[64];     // UII Bereich Schreiben 
+    strVisuText4  : STRING[64];     // User Bereich Schreiben 
+    strVisuText5  : STRING[64];     // Qualitaet 
+    bVisuTasten   : BYTE;           // Softkeys von VISU    
+    
+(****************************************************************************************)
+(*****************************Anfang Variablendeklaration********************************)
+(*********************************fuers Meldesystem***************************************)
+(****************************************************************************************)
+
+    MSYS : STRUCT        
+        xF_1      : BOOL;
+        xF_2      : BOOL;
+        xF_3      : BOOL;
+        xF_4      : BOOL;
+        xF_5      : BOOL;
+        xF_6      : BOOL;
+        xF_7      : BOOL;
+        xF_8      : BOOL;
+        xF_9      : BOOL;
+        xF_10     : BOOL;
+        xF_11     : BOOL;
+        xF_12     : BOOL;
+        xF_13     : BOOL;
+        xF_14     : BOOL;
+        xF_15     : BOOL;
+        xF_16     : BOOL;
+        Flanken  : ARRAY[1..2] OF Byte;    
+    END_STRUCT;
+    
+    AenderungsID : STRUCT
+        SNr    : WORD;
+        ANr    : BYTE;
+        Detail : BYTE;
+    END_STRUCT;
+    
+    Integritaet : BOOL;
+
+(****************************************************************************************)
+(*****************************Ende Variablendeklaration**********************************)
+(*********************************fuers Meldesystem***************************************)
+(****************************************************************************************)
+
+(**SIEMENS********************Anfang Variablendeklaration*************************************)
+(***********fuer bit-, byte-, wordgranulare Sicht von Variablen mit dem AT-Befehl**************)
+    dwVisuWerte1 AT _dwVisuWerte1: STRUCT        // DWORD -> BOOL
+        B3      : BYTE ;
+        B2      : BYTE ;
+        B1      : BYTE ;
+        B0      : BYTE ;
+    END_STRUCT;
+    
+    dwVisuWerte2 AT _dwVisuWerte2 : STRUCT        // DWORD -> WORD
+        W1         : INT ;
+        W0         : INT ;
+    END_STRUCT; 
+    
+    dwVisuWerte3 AT _dwVisuWerte3 : STRUCT        // DWORD -> WORD
+        W1         : WORD ;
+        W0         : WORD ;
+    END_STRUCT; 
+    
+    dwVisuWerte4 AT _dwVisuWerte4: STRUCT        // DWORD -> BOOL
+        X24     : BOOL ;
+        X25     : BOOL ;
+        X26     : BOOL ;
+        X27     : BOOL ;
+        X28     : BOOL ;
+        X29     : BOOL ;
+        X30     : BOOL ;
+        X31     : BOOL ;
+        X16     : BOOL ;
+        X17     : BOOL ;
+        X18     : BOOL ;
+        X19     : BOOL ;
+        X20     : BOOL ;    
+        X21     : BOOL ;
+        X22     : BOOL ;
+        X23     : BOOL ;
+        X8      : BOOL ;
+        X9      : BOOL ;
+        X10     : BOOL ;
+        X11     : BOOL ;
+        X12     : BOOL ;
+        X13     : BOOL ;
+        X14     : BOOL ;
+        X15     : BOOL ;
+        X0      : BOOL ;
+        X1      : BOOL ;
+        X2      : BOOL ;
+        X3      : BOOL ;
+        X4      : BOOL ;    
+        X5      : BOOL ;
+        X6      : BOOL ;
+        X7      : BOOL ;
+    END_STRUCT;
+
+    dwVisuWerteSB4 AT _dwVisuWerte4 : STRUCT      // DWORD -> BYTE
+        B3         : BYTE ;
+        B2         : BYTE ;
+        B1         : BYTE ;
+        B0         : BYTE ;
+    END_STRUCT;
+
+    dwVisuWerte5 AT _dwVisuWerte5: STRUCT         // DWORD -> BOOL
+        B3      : BYTE ;
+        B2      : BYTE ;
+        B1      : BYTE ;
+        B0      : BYTE ;
+    END_STRUCT;
+
+    arrVisuText1 AT strVisuText1 : ARRAY[1..66] OF BYTE;        // String -> Array of Char
+    arrVisuText2 AT strVisuText2 : ARRAY[1..66] OF BYTE;        // String -> Array of Char
+    arrVisuText3 AT strVisuText3 : ARRAY[1..66] OF BYTE;        // String -> Array of Char
+    arrVisuText4 AT strVisuText4 : ARRAY[1..66] OF BYTE;        // String -> Array of Char
+    arrVisuText5 AT strVisuText5 : ARRAY[1..66] OF BYTE;        // String -> Array of Char
+
+(**SIEMENS**********************Ende Variablendeklaration*************************************)
+(***********fuer bit-, byte-, wordgranulare Sicht von Variablen mit dem AT-Befehl**************)
+    TCON_PARAM          : TCON_PAR ;// Connection Parameter 
+    iCommand            : INT;      // Command selection
+    STATUS_TRCV         : WORD;     // Status TRCV     
+    STATUS_TCON         : WORD;     // Status TCON
+    xTimer              : BOOL;     // Wartezeit 
+    xCreateCommand      : BOOL;     // Kommande erstellen
+    xFrgLesen           : BOOL;     // Freigabe Lesen
+    xFrgSchreiben       : BOOL;     // Freigabe Schreiben
+    xS_Lesen            : BOOL;     // Taster Lesen
+    xS_oProz            : BOOL;     // Taster Ohne
+    xS_Schreiben        : BOOL;     // Taster Schreiben
+    xS_Reset            : BOOL;     // Taster Reset
+    xoProz              : BOOL;     // ohne Prozess
+    xStoe               : BOOL;     // Meldung Stoerung aktiv
+    xWarn               : BOOL;     // Meldung Warnung aktiv
+    xWart               : BOOL;     // Meldung Wartung aktiv
+    xGateOn             : BOOL;     // Rueckmeldung Befehl GateOn 
+    xGateOff            : BOOL;     // Rueckmeldung Befehl GateOff
+    xWrite              : BOOL;     // Rueckmeldung Befehl Write i.O.
+    xWriteNIO           : BOOL;     // Rueckmeldung Befehl Write n.i.O.
+    xRead               : BOOL;     // Rueckmeldung Datenempfang
+    xNoRead             : BOOL;     // Rueckmeldung No Read 
+    xCCError            : BOOL;     // Rueckmeldung CC Error 
+    xReadError          : BOOL;     // Rueckmeldung Read Error
+    xSchreiben          : BOOL;     // AS Schreiben aktiv
+    xLesen              : BOOL;     // AS Lesen aktiv
+    xLesenExt           : BOOL;     // Start Lesen Extern
+    xFM_Lesen           : BOOL;     // Taktkontrolle Lesen Hifu
+    xReset              : BOOL;     // Reset
+    xConnected          : BOOL;     // Verbindung ist Aufgebaut
+    xConnReq            : BOOL := True;     // Verbindungsaufbau
+    xSendReq            : BOOL;     // Daten senden
+    xWiederholen        : BOOL;     // Lesen Wiederholen
+    iEndAdd             : INT;      // Endadresse
+    iStartd             : INT;      // Startadresse
+    F_TCPConnect        : BOOL;     // Fehler TCP Verbindungsaufbau
+    F_TCPReceive        : BOOL;     // Fehler TCP Datenempfang
+    F_TCPSend           : BOOL;     // Fehler TCP Datensenden
+    F_TimeOutL          : BOOL;     // Fehler Timeout Lesen 
+    F_TimeOutS          : BOOL;     // Fehler Timeout Schreiben 
+    F_NoRead            : BOOL;     // Fehler Tag lesen
+    F_CCError           : BOOL;     // Fehler CCError
+    F_ReadError         : BOOL;     // Fehler Read Error
+    F_Error             : BOOL;     // Fehler Datenempafng
+    iSchritt            : INT;      // Schritte
+    iZaehler            : INT;      // Test
+    iF_3Befehle         : INT;      // Test Fehlerzaehler mehr als 3 Befehle empfangen
+    iF_Wiederh          : INT;      // Test Fehlerzaehler Wiederholung
+    iF_TimeOut          : INT;      // Test Fehlerzaehler Time Out
+    iF_NoRead           : INT;      // Test Fehlerzaehler No Read
+    iF_CCError          : INT;      // Test Fehlerzaehler CC Error
+    iF_ReadError        : INT;      // Test Fehlerzaehler Read Error
+    R_TRIG_Lesen        : R_Trig;   // pos.Flanke Start Lesen
+    F_TRIG_Lesen        : F_Trig;   // neg.Flanke Start Lesen
+    R_TRIG_Schreiben    : R_Trig;   // pos.Flanke Start Schreiben
+    R_TRIG_S_Lesen      : R_Trig;   // pos.Flanke Taster Lesen
+    R_TRIG_S_oProz      : R_Trig;   // pos.Flanke Taster Ohne
+    R_TRIG_S_Schreiben  : R_Trig;   // pos.Flanke Taster Schreiben
+    R_TRIG_S_Reset      : R_Trig;   // pos.Flanke Taster Reset
+    R_TRIG_FM_Lesen     : R_Trig;   // pos.Flanke Fertigmeldung Lesen
+    R_TRIG_FM_Schreiben : R_Trig;   // pos.Flanke Fertigmeldung Schreiben
+    R_TRIG_TP_S_Lesen   : R_TRIG;   // pos.Flanke Impuls Taste Lesen
+    F_TRIG_TP_S_Lesen   : F_TRIG;   // neg.Flanke Impuls Taste Lesen
+    R_TRIG_F_TimeOut    : R_TRIG;   // pos.Flanke Fehler Timeout
+    R_TRIG_Reset        : R_TRIG;   // pos.Flanke Reset
+    F_TRIG_RESET        : F_TRIG;   // neg.Flanke Reset
+    TON_Timer           : TON;      // Wartezeit
+    TON_Timeout         : TON;      // Instance TON
+    TON_Timer1          : TON;      // Test
+    TCP_Connect         : TCON;     // Instance TCON
+    TCP_Send            : TSEND;    // Instance TSend
+    TCP_Receive         : TRCV;     // Instance TRCV
+    strTempText         : STRING[64];                    //  
+    arrTempText  AT strTempText  : ARRAY[1..66] OF BYTE; // String -> Array of Char
+    Buffer              : ARRAY [1..256] OF BYTE;        // TCP Buffer 
+    DW_Buffer AT Buffer : ARRAY [1..64] OF DWORD;        // View of the buffer (DWord)
+    Send_Buffer         : ARRAY [1..256] OF BYTE;        // Buffer for Telegram
+    Command AT SEND_Buffer: STRING;                      // View of the Send_Buffer (String)
+    strStartAdd         : STRING[4]:= '    ';            // Startadresse als String
+    arrStartAdd AT strStartAdd : ARRAY[1..6] OF BYTE;
+    strLaenge           : STRING[4]:= '    ';            // Laenge als String
+    arrLaenge AT strLaenge     : ARRAY[1..6] OF BYTE;
+    strDataL            : STRING[4]:= '    ';            // Datenlaenge als String
+    arrDataL AT strDataL       : ARRAY[1..6] OF BYTE;
+
+END_VAR
+
+(**************************************************************************)
+(************************ Visu Tasten auswerten ***************************)
+(**************************************************************************)
+If PC_AKTIV = DWORD#0 Then
+    bVisuTasten  := Byte#0;
+END_IF;
+
+xS_Lesen        := (bVisuTasten = 1);
+xS_oProz        := (bVisuTasten = 2); 
+xS_Schreiben    := (bVisuTasten = 3);
+xS_Reset        := (bVisuTasten = 4);
+
+R_TRIG_S_Lesen(CLK:= xS_Lesen);
+R_TRIG_S_oProz(CLK:= xS_oProz);             
+R_TRIG_S_Schreiben(CLK:=xS_Schreiben);
+R_TRIG_S_Reset(CLK:=xS_Reset);
+
+(* An-/Abwahl ohne Prozess *)
+IF R_TRIG_S_oProz.Q AND Frg_oProz THEN
+    xoProz := NOT xoProz;
+    IF xoProz THEN
+        FOR i := 1 TO 256 BY 1 DO
+            Buffer[i] :=    B#16#00; 
+        END_FOR;
+        FOR i:=1 TO 30 BY 1 DO
+            ST_RFU_DATA.READ_TAG.DATA_UII[i] := B#0;
+        END_FOR;  
+        FOR i:=1 TO 64 BY 1 DO
+            ST_RFU_DATA.READ_TAG.DATA_USER[i] := B#0;
+        END_FOR; 
+        arrVisuText1[1] :=   B#64;              // UII Bereich Lesen 
+        arrVisuText1[2] :=   B#0; 
+        arrVisuText3[1] :=   B#64;              // UII Bereich Schreiben 
+        arrVisuText3[2] :=   B#0; 
+        FOR i := 1 TO 30 BY 1 DO
+            arrVisuText1[i+2] :=    B#16#0; 
+            arrVisuText3[i+2] :=    B#16#0;          
+        END_FOR;
+        arrVisuText2[1] :=   B#64;              // User Bereich Lesen
+        arrVisuText2[2] :=   B#0; 
+        arrVisuText4[1] :=   B#64;              // User Bereich Schreiben 
+        arrVisuText4[2] :=   B#0; 
+        FOR i := 1 TO 64 BY 1 DO
+            arrVisuText2[i+2] :=    B#16#0;
+            arrVisuText4[i+2] :=    B#16#0;
+        END_FOR;
+    END_IF;
+END_IF;
+oProz   := xoProz;
+
+
+(* Reset *)
+xReset  := (xS_Reset AND ST_BA.SWE7) OR "Neustart";
+R_TRIG_Reset(CLK:=xReset);
+F_TRIG_Reset(CLK:=xReset);
+
+xFrgLesen       := Ver_Lesen AND NOT xoProz AND NOT ST_BA.K92_PoT AND ST_BA.K100K_LSP AND NOT Stoe;
+xFrgSchreiben   := Ver_Schreiben AND NOT xoProz AND NOT ST_BA.K92_PoT AND ST_BA.K100K_LSP AND NOT Stoe;
+
+R_TRIG_Lesen(CLK:=Lesen);
+F_TRIG_Lesen(CLK:=Lesen);
+R_TRIG_Schreiben(CLK:=Schreiben);
+R_TRIG_FM_Lesen(CLK:=FM_Lesen);
+R_TRIG_FM_Schreiben(CLK:=FM_Schreiben);
+R_TRIG_F_TimeOut(CLK:=F_TimeOutL OR F_TimeOutS);
+
+iEndAdd     := StartAdd + Laenge;
+
+FOR i:= 1 TO  6 DO
+    arrStartAdd[i]  := B#16#20; //Blank 
+    arrLaenge[i]    := B#16#20; //Blank 
+    arrDataL[i]     := B#16#20; //Blank     
+END_FOR;
+
+strStartAdd   := I_STRNG(I:= StartAdd);            
+strLaenge     := I_STRNG(I:= Laenge); 
+strDataL      := I_STRNG(I:= Laenge *4);
+
+// PoT und Vorwahl Ohne
+IF Ver_Lesen AND (F_TRIG_Lesen.Q OR xLesen)
+   AND(xoProz OR ST_BA.K92_PoT) THEN 
+    FM_Lesen := TRUE;
+END_IF;
+IF Ver_Schreiben AND (R_TRIG_Schreiben.Q OR xSchreiben)
+   AND (xoProz OR ST_BA.K92_PoT) THEN 
+    FM_Schreiben := TRUE;
+END_IF;
+
+
+(**************************************************************************)
+(*********************** Verbindung aufbauen ******************************)
+IF R_TRIG_Reset.Q THEN
+    xConnected := False;
+        //xConnReq     := True;
+END_IF;
+IF F_TRIG_Reset.Q THEN
+    xConnReq     := True;
+END_IF;
+
+IF NOT xConnected OR F_TCPReceive OR F_TCPSend THEN (*Automatische Verbindungswiederherstellung im Fehlerfall*)
+    IF F_TCPReceive OR F_TCPSend THEN
+        xConnReq := "0,5Hz";  
+    END_IF;
+    TCON_PARAM.id               := INT_TO_WORD(VerbID.ID);    
+    TCON_PARAM.active_est       := True;    
+    TCON_PARAM.connection_type  := B#16#11;
+    TCON_PARAM.local_device_id  := INT_TO_BYTE(VerbID.DeviceID);    
+    TCON_PARAM.local_tsap_id[1] := WORD_TO_BYTE(SHR(IN:=INT_TO_WORD(VerbID.lokalPort),N:=8));    
+    TCON_PARAM.local_tsap_id[2] := WORD_TO_BYTE(INT_TO_WORD(VerbID.lokalPort));    
+    TCON_PARAM.rem_staddr_len   := B#16#4;    
+    TCON_PARAM.rem_tsap_id_len  := B#16#2;    
+    TCON_PARAM.rem_staddr[1]    := INT_TO_BYTE(VerbID.IP[1]);    
+    TCON_PARAM.rem_staddr[2]    := INT_TO_BYTE(VerbID.IP[2]);    
+    TCON_PARAM.rem_staddr[3]    := INT_TO_BYTE(VerbID.IP[3]);    
+    TCON_PARAM.rem_staddr[4]    := INT_TO_BYTE(VerbID.IP[4]);    
+    TCON_PARAM.rem_tsap_id[1]   := B#16#8;    
+    TCON_PARAM.rem_tsap_id[2]   := B#16#40;    
+
+    TCP_Connect(
+        REQ     := xConnReq,
+        ID      := TCON_PARAM.ID,
+        CONNECT := TCON_PARAM);   
+    
+    IF xConnReq THEN
+        xConnReq := False;
+    END_IF;
+    IF TCP_Connect.DONE OR TCP_Connect.ERROR THEN
+        xConnected   := TCP_Connect.DONE;
+        F_TCPConnect := TCP_Connect.ERROR;
+    END_IF;         
+    IF TCP_Connect.ERROR AND TCP_Connect.STATUS = W#16#80A3 THEN
+        xConnected   := True;
+        F_TCPConnect := False;
+        F_TCPReceive := False;
+        F_TCPSend    := False;
+    END_IF;
+
+    IF TCP_Connect.STATUS <> W#16#7000 THEN
+        STATUS_TCON := TCP_Connect.STATUS;
+    END_IF;
+
+(**************************************************************************)
+(************************** RECEIVE TELEGRAM ******************************)
+ELSE
+    TCON_PARAM.id               := INT_TO_WORD(VerbID.ID);    
+    TCON_PARAM.active_est       := True;    
+    TCON_PARAM.connection_type  := B#16#11;
+    TCON_PARAM.local_device_id  := INT_TO_BYTE(VerbID.DeviceID);    
+    TCON_PARAM.local_tsap_id[1] := WORD_TO_BYTE(SHR(IN:=INT_TO_WORD(VerbID.lokalPort),N:=8));    
+    TCON_PARAM.local_tsap_id[2] := WORD_TO_BYTE(INT_TO_WORD(VerbID.lokalPort));    
+    TCON_PARAM.rem_staddr_len   := B#16#4;    
+    TCON_PARAM.rem_tsap_id_len  := B#16#2;    
+    TCON_PARAM.rem_staddr[1]    := INT_TO_BYTE(VerbID.IP[1]);    
+    TCON_PARAM.rem_staddr[2]    := INT_TO_BYTE(VerbID.IP[2]);    
+    TCON_PARAM.rem_staddr[3]    := INT_TO_BYTE(VerbID.IP[3]);    
+    TCON_PARAM.rem_staddr[4]    := INT_TO_BYTE(VerbID.IP[4]);    
+    TCON_PARAM.rem_tsap_id[1]   := B#16#8;    
+    TCON_PARAM.rem_tsap_id[2]   := B#16#40;    
+
+    TCP_Receive(
+        EN_R    := NOT F_TCPReceive,
+        ID      := TCP_Connect.ID,  
+        LEN     := 0,
+        DATA    := Buffer); 
+        
+    IF TCP_Receive.NDR OR TCP_Receive.ERROR THEN
+        F_TCPReceive := TCP_Receive.ERROR;
+    END_IF;
+           
+    IF (R_TRIG_Lesen.Q OR R_TRIG_S_Lesen.Q OR xLesen) AND xFrgLesen AND NOT xSchreiben THEN
+        IF iSchritt = 0 THEN
+            xGateOn     := False;
+            xGateOff    := False;
+            xWrite      := False;
+            xWriteNIO   := False;
+            xRead       := False;
+            xNoRead     := False;
+            xCCError    := False;
+            xReadError  := False;
+            xTimer      := False;
+            xFM_Lesen   := False;
+            FM_Lesen    := False;
+            FM_Schreiben:= False;
+            BUSY        := True;
+            xLesen      := True; 
+            xLesenExt   := R_TRIG_Lesen.Q AND NOT CFG.X0;
+            iZaehler    := 0;
+            FOR i := 1 TO 256 BY 1 DO
+                Buffer[i] :=    B#16#00; 
+            END_FOR;
+            FOR i:=1 TO 30 BY 1 DO
+                ST_RFU_DATA.READ_TAG.DATA_UII[i] := B#0;
+            END_FOR;  
+            FOR i:=1 TO 64 BY 1 DO
+                ST_RFU_DATA.READ_TAG.DATA_USER[i] := B#0;
+            END_FOR; 
+            iSchritt    := 1;
+        END_IF;
+        
+        IF iSchritt = 1 THEN
+            iCommand    := 1;           // GateON Start
+            iSchritt    := 2;
+        END_IF;
+        
+        IF iSchritt = 2 THEN
+            IF xGateOn THEN             // Watre auf GateOn
+                iSchritt    := 3;       
+                xGateOn     := False; 
+            END_IF;
+        END_IF;
+        
+        IF iSchritt = 3 THEN
+            xTimer      := True;
+            iCommand    := 4;           // Wartezeit Start
+            iSchritt    := 4;                   
+        END_IF;
+        
+        IF iSchritt = 4 THEN
+            IF (NOT xLesenExt AND NOT xTimer) // Wartezeit abgelaufen (Intern/Extern "Cfg.X0") oder Gate geschlossen (Extern)
+               OR (xLesenExt AND NOT Lesen AND NOT xTimer) THEN  
+                iSchritt    := 5;
+            END_IF;
+        END_IF;
+   
+        IF iSchritt = 5 THEN
+            iCommand    := 2;           // GateOff Start
+            iSchritt    := 7;       
+        END_IF;
+
+        IF iSchritt = 7 THEN
+            IF xRead OR xNoRead OR xCCError OR xReadError THEN // Warte auf Daten oder No Read oder CC Error Oder Read Error
+            iSchritt    := 6;       
+            END_IF;
+        END_IF;
+        IF iSchritt = 6 THEN
+            IF xGateOff THEN // Warte GateOff
+                iSchritt    := 0;       
+                F_NoRead    := xNoRead;
+                F_CCError   := xCCError;
+                F_ReadError := xReadError;
+                xFM_Lesen   := xRead;
+                FM_Lesen    := xRead;
+                BUSY        := False;
+                xGateOn     := False;
+                xGateOff    := False;
+                xWrite      := False;
+                xWriteNIO   := False;
+                xRead       := False;
+                xNoRead     := False;
+                xCCError    := False;
+                xReadError  := False;
+                xTimer      := False;
+                xLesen      := False; 
+            END_IF;
+        END_IF;
+    END_IF;            
+    
+    IF (((R_TRIG_Schreiben.Q OR R_TRIG_S_Schreiben.Q) AND FM_Lesen) OR xSchreiben) AND xFrgSchreiben AND NOT xLesen THEN
+        IF iSchritt = 0  THEN
+            xGateOn     := False;
+            xGateOff    := False;
+            xWrite      := False;
+            xWriteNIO   := False;
+            xRead       := False;
+            xNoRead     := False;
+            xCCError    := False;
+            xReadError  := False;
+            xTimer      := False;
+            xFM_Lesen   := False;
+            FM_Lesen    := False;
+            FM_Schreiben:= False;
+            BUSY        := True;
+            xSchreiben  := True; 
+            iSchritt    := 8;
+            FOR i := 1 TO 256 BY 1 DO
+                Buffer[i] :=    B#16#00; 
+            END_FOR;
+        
+            IF R_TRIG_S_Schreiben.Q THEN            // Schreibauftrag Intern (Visu)
+                j := 2;
+                FOR i := StartAdd *2 TO iEndAdd *2 BY 1 DO
+                    arrTempText[j] := arrVisuText4[i+2];
+                    j := j+1;
+                END_FOR;
+                arrTempText[1]  := B#64;
+                arrTempText[2]  := INT_TO_BYTE(Laenge *2);
+            //arrTempText := arrVisuText4;
+            END_IF;
+
+            IF R_TRIG_Schreiben.Q THEN              // Schreibauftrag Extern
+                j := 2;
+                FOR i := StartAdd *2 TO iEndAdd *2 BY 1 DO
+                    arrTempText[j] := ST_RFU_DATA.Write_TAG.DATA_USER[i]; 
+                    j := j+1;
+                END_FOR;
+                arrTempText[1]  := B#64;
+                arrTempText[2]  := INT_TO_BYTE(Laenge *2);
+            END_IF;
+        END_IF;
+    
+        IF iSchritt = 8 THEN
+            iCommand    := 3;           // Userdaten Schreiben Start
+            iSchritt    := 9;
+        END_IF;
+        
+        IF iSchritt = 9 THEN
+            IF xWrite  THEN             // Warte auf Userdaten geschrieben i.O.
+                iSchritt    := 10;       
+                xWrite      := False; 
+            ELSIF xWriteNIO THEN        // Warte User Daten geschrieben n.i.O.
+                iSchritt    := 0;       
+                xWriteNIO   := False; 
+            END_IF;
+        END_IF;
+        
+        IF iSchritt = 10 THEN
+            iCommand := 1;              // GateON Start
+            iSchritt := 11;
+        END_IF;
+        
+        IF iSchritt = 11 THEN
+            IF xGateOn THEN             // Warte GateOn
+                iSchritt    := 12;       
+                xGateOn     := False; 
+            END_IF;
+        END_IF;
+            
+        IF iSchritt = 12 THEN
+            xTimer   := True;
+            iCommand := 4;              // Timer Start
+            iSchritt := 13;
+        END_IF;
+
+        IF iSchritt = 13 THEN
+            IF NOT xTimer THEN          // Warte Timer
+                iSchritt    := 14;       
+            END_IF;
+        END_IF;
+
+        IF iSchritt = 14 THEN
+            iCommand := 2;              // GateOff Start  
+            iSchritt := 16;
+        END_IF;
+        
+        IF iSchritt = 16 THEN
+            IF xRead THEN               // Warte auf Daten UII und User
+                iSchritt    := 0;       
+                xRead       := False; 
+                FM_Lesen    := True;
+                FM_Schreiben:= True;
+                BUSY        := False; 
+                xSchreiben  := False; 
+            END_IF;
+        END_IF;
+            
+        IF iSchritt = 16 THEN
+            IF xRead OR xNoRead OR xCCError OR xReadError THEN // Warte auf Daten oder No Read oder CC Error
+            iSchritt    := 15;       
+            END_IF;
+        END_IF;
+        IF iSchritt = 15 THEN
+            IF xGateOff THEN // Warte GateOff
+                iSchritt    := 0;       
+                F_NoRead    := xNoRead;
+                F_CCError   := xCCError;
+                F_ReadError := xReadError;
+                xFM_Lesen   := xRead;
+                FM_Lesen    := xRead;
+                FM_Schreiben:= xRead;
+                BUSY        := False;
+                xGateOn     := False;
+                xGateOff    := False;
+                xWrite      := False;
+                xWriteNIO   := False;
+                xRead       := False;
+                xNoRead     := False;
+                xCCError    := False;
+                xReadError  := False;
+                xTimer      := False;
+                xSchreiben  := False; 
+            END_IF;
+        END_IF;
+    END_IF;            
+
+    CASE iCommand OF
+    // GateOn
+    1:  Command      := 'sMN mTCgateon';    // Trigger on command
+        Send_Buffer[1]    := B#16#00;       // Overwrite string length
+        Send_Buffer[2]    := B#16#02;       // Add [STX]
+        Send_Buffer[16]   := B#16#03;       // Add [ETX]
+        TCP_SEND.LEN      := 16;
+        xCreateCommand    := True;
+
+    // GateOff
+    2:  Command      := 'sMN mTCgateoff';   // Trigger on command
+        Send_Buffer[1]    := B#16#00;       // Overwrite string length
+        Send_Buffer[2]    := B#16#02;       // Add [STX]
+        Send_Buffer[17]   := B#16#03;       // Add [ETX]
+        TCP_SEND.LEN      := 17;         
+        xCreateCommand    := True;
+
+    // Write
+    3:  Command := 'sMN TAwriteTagData +60 ';   // Write tag command with first Part of Tag adress
+        Start_Adr := 1; // Set Start adress
+        FOR i:= 25 TO  84 DO
+            Send_Buffer[Start_Adr+i] := Buffer[i-13]; // 
+        END_FOR;
+        Send_Buffer[Start_Adr+85]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+86]   := B#16#33;         // Add Bank = 3
+        Send_Buffer[Start_Adr+87]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+88]   := arrStartAdd[3];  // Add Pointer (z.B. 0)
+        Send_Buffer[Start_Adr+89]   := arrStartAdd[4];  // Add Pointer
+        Send_Buffer[Start_Adr+90]   := arrStartAdd[5];  // Add Pointer
+        Send_Buffer[Start_Adr+91]   := arrStartAdd[6];  // Add Pointer
+        Send_Buffer[Start_Adr+92]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+93]   := arrLaenge[3];    // Add Wordcounter (z.B. +32) 
+        Send_Buffer[Start_Adr+94]   := arrLaenge[4];    // Add Wordcounter 
+        Send_Buffer[Start_Adr+95]   := arrLaenge[5];    // Add Wordcounter
+        Send_Buffer[Start_Adr+96]   := arrLaenge[6];    // Add Wordcounter
+        Send_Buffer[Start_Adr+97]   := B#16#20;         // Add blank 
+        Send_Buffer[Start_Adr+98]   := B#16#38;         // Add Retry = 8 
+        Send_Buffer[Start_Adr+99]   := B#16#20;         // Add blank 
+        Send_Buffer[Start_Adr+100]  := arrDataL[3];     // Add Datalength (z.B. +128)
+        Send_Buffer[Start_Adr+101]  := arrDataL[4];     // Add Datalength 
+        Send_Buffer[Start_Adr+102]  := arrDataL[5];     // Add Datalength
+        Send_Buffer[Start_Adr+103]  := arrDataL[6];     // Add Datalength
+        Send_Buffer[Start_Adr+104]  := B#16#20;         // Add blank 
+        Address := LEN(strDataL)+1 +Start_Adr +100;
+        (*Convert HEX --> ASCII HEX*)
+        FOR j:=3 TO 66 DO
+            Temp := BYTE_TO_INT(SHR(IN:=arrTempText[j], N:=4));
+            FOR i:=1 TO 2 DO
+               IF Temp > 9 THEN
+                   Temp := Temp + 55;
+               ELSE
+                   Temp := Temp + 48;
+               END_IF;
+               Send_Buffer[Address] := INT_TO_BYTE(Temp);
+               Address := Address+1;
+               Temp    := BYTE_TO_INT(arrTempText[j] AND B#16#0F);
+            END_FOR;             
+        END_FOR;
+        Send_Buffer[1]  := B#16#00;     // Overwrite string length
+        Send_Buffer[2]  := B#16#02;     // Add [STX]
+        Send_Buffer[Start_Adr+233] := B#16#03;    // Add [ETX]   
+        TCP_SEND.LEN    := 234;         // Command length  
+        xCreateCommand  := True;
+    
+    // Timer
+    4:  xTimer      := True;
+        iCommand    := 0;
+    END_CASE;
+
+    TON_Timer(IN:=xTimer, PT:= t#1s);
+    IF TON_Timer.Q THEN
+        xTimer := False;
+    END_IF;
+
+    IF xCreateCommand THEN         
+        xSendReq        := True;
+        iCommand        := 0;
+        xCreateCommand  := False;
+    END_IF;
+
+    TCP_Send(
+        REQ     := xSendReq,
+        ID      := TCON_PARAM.ID,
+        DATA    := SEND_Buffer);
+      
+        Status_TRCV := TCP_Send.STATUS;    
+
+    IF xSendReq THEN
+        xSendReq := False;
+    END_IF;    
+  
+    IF TCP_Send.DONE OR TCP_Send.Error THEN
+        F_TCPSend := TCP_Send.Error;
+    END_IF;
+
+
+    IF (*BUSY AND*)NOT TCP_Receive.BUSY AND TCP_Receive.NDR THEN     
+
+        // GateOn
+        IF  DW_Buffer[1] = DW#16#0273414E AND   // '[STX]sAN
+            DW_Buffer[2] = DW#16#206D5443 AND   //  mTC
+            DW_Buffer[3] = DW#16#67617465 AND   // gate
+            DW_Buffer[4] = DW#16#6F6E2031 AND   // on 1
+            Buffer[17]   = B#16#03              // [ETX]' 
+            THEN
+            xGateOn := True;
+    
+        // GateOff
+        ELSIF DW_Buffer[1] = DW#16#0273414E AND // '[STX]sAN
+              DW_Buffer[2] = DW#16#206D5443 AND //  mTC
+              DW_Buffer[3] = DW#16#67617465 AND // gate
+              DW_Buffer[4] = DW#16#6F666620 AND // off 
+              Buffer[17]   = B#16#31        AND // 1                          
+              Buffer[18]   = B#16#03            // [ETX]'
+              THEN
+            xGateOff := True;
+    
+        // Write
+        ELSIF DW_Buffer[1] = DW#16#0273414e AND // [STX]sAN 
+              DW_Buffer[2] = DW#16#20544177 AND //  TAw 
+              DW_Buffer[3] = DW#16#72697465 AND // rite
+              DW_Buffer[4] = DW#16#54616744 AND // TagD
+              DW_Buffer[5] = DW#16#61746120 AND // ata 
+              Buffer[21]   = B#16#31            // 1 
+              THEN
+            xWrite := True;
+    
+        // Write n.i.O.
+        ELSIF DW_Buffer[1] = DW#16#0273414e AND // [STX]sAN 
+              DW_Buffer[2] = DW#16#20544177 AND //  TAw 
+              DW_Buffer[3] = DW#16#72697465 AND // rite
+              DW_Buffer[4] = DW#16#54616744 AND // TagD
+              DW_Buffer[5] = DW#16#61746120 AND // ata 
+              Buffer[21]   = B#16#30            // 0 
+              THEN
+            xWriteNIO := True;
+
+        // Read
+        ELSIF DW_Buffer[1] = DW#16#02525353     // [STX]RSS
+              THEN
+            (*Convert ASCII HEX --> HEX , UII Area*) 
+            FOR j:=1 TO 30 BY 1 DO
+                IF j = 1 THEN 
+                    Address := 20;
+                END_IF;
+                    
+                FOR i:=1 TO 2 BY 1 DO
+                    Temp :=BYTE_TO_INT(Buffer[Address])-48;
+                    IF Temp > 9 THEN
+                        Temp := Temp-7; // Sign is a character [A..F]
+                    END_IF;
+                    ST_RFU_DATA.READ_TAG.DATA_UII[j] := SHL(IN:=ST_RFU_DATA.READ_TAG.DATA_UII[j], N:=4) OR INT_TO_BYTE(Temp);
+                    Address    := Address + 1;
+                END_FOR;  
+            END_FOR;
+            (*Convert ASCII HEX --> HEX , USER Area*) 
+            FOR j:=1 TO 64 BY 1 DO
+                IF j = 1 THEN 
+                    Address := 86;
+                END_IF;
+                    
+                FOR i:=1 TO 2 BY 1 DO
+                    Temp :=BYTE_TO_INT(Buffer[Address])-48;
+                    IF Temp > 9 THEN
+                        Temp := Temp-7; // Sign is a character [A..F]
+                    END_IF;
+                    ST_RFU_DATA.READ_TAG.DATA_USER[j] := SHL(IN:=ST_RFU_DATA.READ_TAG.DATA_USER[j], N:=4) OR INT_TO_BYTE(Temp);
+                    Address    := Address + 1;
+                END_FOR;  
+            END_FOR;
+            xRead := True;
+
+        // No Read
+        ELSIF DW_Buffer[1] = DW#16#024E6F52 AND // [STX]NoR
+              DW_Buffer[2] = DW#16#6561640D     // ead[CR]
+              THEN
+            xNoRead := True;
+            iF_NoRead := iF_NoRead +1;     // Test
+
+        // CCError
+        ELSIF DW_Buffer[1] = DW#16#02434345 AND // [STX]CCE
+              DW_Buffer[2] = DW#16#72726F72     // rror
+              THEN
+            xCCError := True;
+            iF_CCError := iF_CCError +1;  // Test
+
+        // ReadError
+        ELSIF DW_Buffer[1] = DW#16#02526561 AND // [STX]Rea
+              DW_Buffer[2] = DW#16#64457272     // dErr
+              THEN
+            xReadError := True;
+            iF_ReadError := iF_ReadError +1;  // Test
+
+
+        // ???
+        //ELSE
+        //    F_Error     := TRUE;
+        END_IF;
+
+iZaehler := iZaehler + 1;    // Test
+
+    END_IF;
+END_IF;
+
+IF iZaehler >= 4 THEN        // Test
+    iF_3Befehle := iF_3Befehle + 1;
+    iZaehler := 0;
+END_IF;
+
+
+// Fehler Reset
+IF ((ST_BA.Quit OR NOT ST_BA.En_Stoe) AND Stoe AND NOT xoProz AND NOT ST_BA.K92_PoT ) OR xReset THEN
+    F_TimeOutL      := False; 
+    F_TimeOutS      := False; 
+    F_NoRead        := False;
+    F_CCError       := False;
+    F_ReadError     := False;
+    F_Error         := False;
+    iCommand        := 0; 
+    iSchritt        := 0; 
+    BUSY            := False;
+    xLesen          := False;
+    xSchreiben      := False;
+END_IF;
+
+IF xReset THEN
+    F_TCPConnect    := False;
+    F_TCPReceive    := False;
+    F_TCPSend       := False;
+    FOR i := 1 TO 256 BY 1 DO
+        Buffer[i] :=    B#16#0; 
+    END_FOR;
+            FOR i := 1 TO 256 BY 1 DO
+            Buffer[i] :=    B#16#00; 
+        END_FOR;
+        FOR i:=1 TO 30 BY 1 DO
+            ST_RFU_DATA.READ_TAG.DATA_UII[i] := B#0;
+        END_FOR;  
+        FOR i:=1 TO 64 BY 1 DO
+            ST_RFU_DATA.READ_TAG.DATA_USER[i] := B#0;
+        END_FOR; 
+        arrVisuText1[1] :=   B#64;              // UII Bereich Lesen 
+        arrVisuText1[2] :=   B#0; 
+        arrVisuText3[1] :=   B#64;              // UII Bereich Schreiben 
+        arrVisuText3[2] :=   B#0; 
+        FOR i := 1 TO 30 BY 1 DO
+            arrVisuText1[i+2] :=    B#16#0; 
+            arrVisuText3[i+2] :=    B#16#0;          
+        END_FOR;
+        arrVisuText2[1] :=   B#64;              // User Bereich Lesen
+        arrVisuText2[2] :=   B#0; 
+        arrVisuText4[1] :=   B#64;              // User Bereich Schreiben 
+        arrVisuText4[2] :=   B#0; 
+        FOR i := 1 TO 64 BY 1 DO
+            arrVisuText2[i+2] :=    B#16#0;
+            arrVisuText4[i+2] :=    B#16#0;
+        END_FOR;
+    FM_Lesen        := False;
+    FM_Schreiben    := False;
+END_IF;
+
+// Fehler: Timeout Lesen
+IF TON_Timeout.Q AND xLesen AND iSchritt > 5 THEN
+    BUSY            := FALSE;
+    F_TimeOutL      := True;
+    iF_TimeOut := iF_TimeOut +1;  // Test
+
+// Fehler: Timeout Schreiben
+ELSIF TON_Timeout.Q AND xSchreiben THEN
+    BUSY            := FALSE;
+    F_TimeOutS      := True;
+
+END_IF;
+
+IF FM_Reset THEN
+    iCommand        := 0; 
+    iSchritt        := 0; 
+    BUSY            := False;
+    FM_Lesen        := False;
+    FM_Schreiben    := False;
+    xLesen          := False;
+    xSchreiben      := False;
+    xGateOn         := False;
+    xGateOff        := False;
+    xWrite          := False;
+    xWriteNIO       := False;
+    xRead           := False;
+    xNoRead         := False;
+    xCCError        := False;
+    xReadError      := False;
+    xTimer          := False;
+    xWiederholen    := False;
+    FOR i := 1 TO 256 BY 1 DO
+        Buffer[i] :=    B#16#00; 
+    END_FOR;
+    FOR i:=1 TO 30 BY 1 DO
+        ST_RFU_DATA.READ_TAG.DATA_UII[i] := B#0;
+    END_FOR;  
+    FOR i:=1 TO 64 BY 1 DO
+        ST_RFU_DATA.READ_TAG.DATA_USER[i] := B#0;
+    END_FOR; 
+
+END_IF;
+
+// TIME out
+TON_Timeout(IN:=BUSY AND NOT F_TimeOutL AND NOT F_TimeOutS, PT:=ZUeGes); 
+
+// Lesen Wiederholen
+TON_Timer1(IN:=(F_TimeOutL OR F_NoRead OR F_CCError OR F_ReadError) AND NOT xWiederholen AND xLesenExt AND Cfg.X1, PT:= t#500ms);
+IF TON_Timer1.Q THEN
+    F_TimeOutL      := False; 
+    F_NoRead        := False;
+    F_CCError       := False;
+    F_ReadError     := False;
+    iCommand        := 0; 
+    iSchritt        := 0; 
+    BUSY            := False;
+    xLesen          := True;
+    xWiederholen    := True;
+    iF_Wiederh      := iF_Wiederh +1;  // Test
+END_IF;
+
+// Sammelstoerung
+Stoe := F_TCPConnect
+     OR F_TCPReceive 
+     OR F_TCPSend
+     OR F_TimeOutL 
+     OR F_TimeOutS 
+     OR F_NoRead
+     OR F_CCError
+     OR F_ReadError
+     OR F_Error;
+
+// Verkettete Stoerung
+VkStoe_Out:= VkStoe_In OR Stoe;
+
+(**************************************************************************)
+(******************** Array Data_UII schreiben ****************************)
+(**************************************************************************)
+
+FOR i:=1 TO 30 BY 1 DO
+    Data_UII[i] := ST_RFU_DATA.READ_TAG.DATA_UII[i];
+END_FOR;
+
+(**************************************************************************)
+(************* Datenaufbereitung fuer die Visualisierung *******************)
+(**************************************************************************)
+dwVisuWerte1.B0 := INT_TO_BYTE(VerbID.IP[4]);
+dwVisuWerte1.B1 := INT_TO_BYTE(VerbID.IP[3]);
+dwVisuWerte1.B2 := INT_TO_BYTE(VerbID.IP[2]);
+dwVisuWerte1.B3 := INT_TO_BYTE(VerbID.IP[1]);
+
+dwVisuWerte2.W0 := VerbID.lokalPort;
+
+IF (DW_Buffer[1] = DW#16#02525353) THEN // [STX]RSS'
+    arrVisuText5[1] := B#64;
+    arrVisuText5[2] := B#4; 
+    arrVisuText5[3] := Buffer[7]; 
+    arrVisuText5[4] := Buffer[8];
+    arrVisuText5[5] := Buffer[9];
+    arrVisuText5[6] := Buffer[10]; 
+END_IF;
+
+
+dwVisuWerte4.X0 := xLesen AND NOT FM_Lesen AND NOT Stoe;    // Taster Lesen Gruen BlinkL
+dwVisuWerte4.X1 := FM_Lesen;                                // Taster Lesen Gruen           
+dwVisuWerte4.X2 := xFrgLesen;                               // Taster Lesen Verriegelung           
+
+dwVisuWerte4.X3 := xSchreiben AND NOT FM_Schreiben AND NOT Stoe; // Taster Schreiben Gruen BlinkL
+dwVisuWerte4.X4 := FM_Schreiben;                            // Taster Schreiben Gruen
+dwVisuWerte4.X5 := xFrgSchreiben AND FM_Lesen;              // Taster Schreiben Verriegelung
+
+dwVisuWerte4.X6 := xoProz;                                  // Taster Ohne Gelb
+dwVisuWerte4.X7 := Frg_oProz;
+
+dwVisuWerte4.X8 := False;                                   // K100 ausblenden
+dwVisuWerte4.X9 := ST_BA.K100K_LSP;                         // K100 Gruen
+
+dwVisuWerte4.X10 := F_TimeOutL                              // Rahmen Lesen
+                 OR ((F_NoRead OR F_CCError OR F_ReadError OR F_Error)AND xLesen);
+dwVisuWerte4.X11 := F_TimeOutS                              // Rahmen Schreiben
+                 OR ((F_NoRead OR F_CCError OR F_ReadError OR F_Error)AND xSchreiben);
+
+dwVisuWerte4.X12 := xReset;                                 // Taster Reset Gruen
+dwVisuWerte4.X13 := ST_BA.SWE7;                             // Taster Reset Verriegelung
+
+
+dwVisuWerteSB4.B2 := INT_TO_BYTE(iSchritt);                 // Status
+
+dwVisuWerte5.B0   := INT_TO_BYTE(StartAdd *2);              // Start Adresse       
+dwVisuWerte5.B1   := INT_TO_BYTE(Laenge *2);                // Laenge       
+dwVisuWerte5.B2   := INT_TO_BYTE(iEndAdd *2);               // Ende  Adresse      
+
+IF xStoe THEN                                      (* Visusymbole 03 Rahmen und 10 Button *)  
+    dwVisuWerteSB4.B3 := Byte#3;                   (* Rot *)
+ELSIF xWarn THEN
+    dwVisuWerteSB4.B3 := Byte#6;                   (* Gelb *)
+ELSIF xWart THEN
+    dwVisuWerteSB4.B3 := Byte#2;                   (* Blau *)
+ELSE
+    dwVisuWerteSB4.B3 := Byte#0;
+END_IF;    
+
+(* VISU abloeschen *)
+IF NOT FM_Lesen AND NOT xLesen AND NOT xSchreiben THEN
+    arrVisuText1[1] :=   B#64;              // UII Bereich Lesen 
+    arrVisuText1[2] :=   B#0; 
+    FOR i := 1 TO 30 BY 1 DO
+        arrVisuText1[i+2] :=    B#16#0; 
+    END_FOR;
+    
+    arrVisuText2[1] :=   B#64;              // User Bereich Lesen
+    arrVisuText2[2] :=   B#0; 
+    FOR i := 1 TO 64 BY 1 DO
+        arrVisuText2[i+2] :=    B#16#0;
+    END_FOR;
+
+    arrVisuText3[1] :=   B#64;              // UII Bereich Schreiben 
+    arrVisuText3[2] :=   B#0; 
+    FOR i := 1 TO 30 BY 1 DO
+        arrVisuText3[i+2] :=    B#16#0; 
+    END_FOR;
+
+    arrVisuText4[1] :=   B#64;              // User Bereich Schreiben 
+    arrVisuText4[2] :=   B#0; 
+    FOR i := 1 TO 64 BY 1 DO
+        arrVisuText4[i+2] :=    B#16#0;
+    END_FOR;
+END_IF;
+
+(* Visu schreiben nach Lesen *)
+IF R_TRIG_FM_Lesen.Q THEN
+    arrVisuText1[1] :=   B#64;              // UII Bereich Lesen 
+    arrVisuText1[2] :=   B#64; 
+    FOR i := 1 TO 30 BY 1 DO
+        arrVisuText1[i+2] :=    ST_RFU_DATA.READ_TAG.DATA_UII[i];
+    END_FOR;
+
+    arrVisuText2[1] :=   B#64;              // User Bereich Lesen  
+    arrVisuText2[2] :=   B#64;  
+    FOR i := 1 TO 64 BY 1 DO
+    //-- Zeichen "NULL" mit Hex-Wert B#16#00 ist nicht gueltig
+    //-- Byte#16#00 im DATA_USER werden zur Darstellung durch
+    //-- Byte#16#20 (Leerzeichen) ersetzt
+        IF ST_RFU_DATA.READ_TAG.DATA_USER[i] = Byte#16#00 THEN
+            arrVisuText2[i+2] :=    Byte#16#20;
+        ELSE
+            arrVisuText2[i+2] :=    ST_RFU_DATA.READ_TAG.DATA_USER[i]; 
+        END_IF;        
+     END_FOR;
+
+    IF xFM_Lesen THEN
+        arrVisuText3[1] :=   B#64;          // UII Bereich Schreiben  
+        arrVisuText3[2] :=   B#64;  
+        FOR i := 1 TO 30 BY 1 DO
+            arrVisuText3[i+2] :=    ST_RFU_DATA.READ_TAG.DATA_UII[i]; 
+        END_FOR;
+
+        arrVisuText4[1] :=   B#64;          // User Bereich Lesen  
+        arrVisuText4[2] :=   B#64;  
+        FOR i := 1 TO 64 BY 1 DO
+    //-- Zeichen "NULL" mit Hex-Wert B#16#00 ist nicht gueltig
+    //-- Byte#16#00 im DATA_USER werden zur Darstellung durch
+    //-- Byte#16#20 (Leerzeichen) ersetzt
+            IF ST_RFU_DATA.READ_TAG.DATA_USER[i] = Byte#16#00 THEN
+                arrVisuText4[i+2] :=    Byte#16#20;
+            ELSE
+                arrVisuText4[i+2] :=    ST_RFU_DATA.READ_TAG.DATA_USER[i]; 
+            END_IF;
+        END_FOR;
+    xFM_Lesen := False;
+    END_IF;
+END_IF;
+
+(* Visu schreiben bei NoRead  *)
+IF F_NoRead THEN  // [STX]NoRead[CR]
+    strVisuText1 := 'No Read';
+    strVisuText2 := 'No Read';
+    strVisuText3 := ' ';
+    strVisuText4 := ' ';
+END_IF;
+
+(* Visu schreiben bei CCError  *)
+IF F_CCError THEN  // [STX]CCError
+    strVisuText1 := 'CCError >=2';
+    strVisuText2 := 'CCError >=2';
+    strVisuText3 := ' ';
+    strVisuText4 := ' ';
+END_IF;
+
+(* Visu schreiben bei ReadError  *)
+IF F_ReadError THEN  // [STX]ReaError
+    strVisuText1 := 'Read Error';
+    strVisuText2 := 'Read Error';
+    strVisuText3 := ' ';
+    strVisuText4 := ' ';
+END_IF;
+
+    
+(****************************************************************************************)
+(*******************Anfang Signalaufbereitung Meldesystem *******************************)
+(***********************AUFRUF am Ende im SCL-BAUSTEINS**********************************)
+
+TempPointerMsys := Msys;
+TempPointerFlanken := Msys.Flanken;
+TempPointerMeldpuffer := ST_Meld;
+
+pMeldFeld.BZ := pMeldFeld.BZ OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+pMeldAbb.BZ  := pMeldAbb.BZ  OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+
+pMeldFeld.TYP := 1;// Typ:=1 ist gleich BOOL, darf nicht veraendert werden
+pMeldFeld.ANZ := 16;// Anzahl der Meldungen min. 8 Bit oder mehr, muss jedoch durch 8 teilbar sein.
+pMeldAbb.TYP := 2;// Typ:=2 ist gleich BYTE, darf nicht veraendert werden
+pMeldAbb.ANZ := 2;// Anzahl der Bytes im ARRAY min. jedoch 1 Byte
+
+
+MSYS.xF_1   := F_TCPConnect;                // STE/TCP Verbindungsaufbau 
+MSYS.xF_2   := F_TCPReceive;                // STE/TCP Datenempfang
+MSYS.xF_3   := F_TCPSend;                   // STE/TCP Datensenden 
+MSYS.xF_4   := F_TimeOutL;                  // STE/Timeout Lesen 
+MSYS.xF_5   := F_TimeOutS;                  // STE/Timeout Schreiben 
+MSYS.xF_6   := F_NoRead;                    // STE/Lesen nicht moeglich 
+MSYS.xF_7   := F_CCError;                   // STE/CCError   
+MSYS.xF_8   := F_Error;                     // STE/Datenempfang 
+MSYS.xF_9   := F_ReadError;                 // STE/Lesefehler
+MSYS.xF_10  := xWiederholen;                // MT0/Wiederholung Lesen
+MSYS.xF_11  := xoProz;                      // MT0/Ohne Prozess
+MSYS.xF_12  := False;
+MSYS.xF_13  := False; 
+MSYS.xF_14  := False; 
+MSYS.xF_15  := False; 
+MSYS.xF_16  := False; 
+
+MeldSend(AufrufNr :=  1
+         ,Anz_Meld :=  16 
+         ,pMeldFeld :=  pMeldFeld.BZ
+         ,pMeldAbb :=  pMeldAbb.BZ
+         ,MeldDB :=  WORD_TO_INT(pMeldDBNR.DBNR)
+         ,AenderungsID :=  AenderungsID
+         ,Integritaet :=  Integritaet
+         ,Neustart :=  Neustart
+         ); // VOID
+
+
+// Vorlage fuer Stationsbezogene Bausteine
+
+xStoe := Msys.xF_1    
+      OR Msys.xF_2    
+      OR Msys.xF_3    
+      OR Msys.xF_4    
+      OR Msys.xF_5    
+      OR Msys.xF_6    
+      OR Msys.xF_7    
+      OR Msys.xF_8    
+      OR Msys.xF_9     
+      OR Msys.xF_12   
+      OR Msys.xF_13   
+      OR Msys.xF_14   
+      OR Msys.xF_15   
+      OR Msys.xF_16;
+DB_ARG.VisuSS.Station_Stoer:= DB_ARG.VisuSS.Station_Stoer OR xStoe;
+                           
+xWARN := Msys.xF_10
+      OR Msys.xF_11;
+DB_ARG.VisuSS.Station_Warn := DB_ARG.VisuSS.Station_Warn OR xWARN;
+                           
+xWART := FALSE;
+DB_ARG.VisuSS.Station_Wart := DB_ARG.VisuSS.Station_Wart OR xWART;
+                           
+(****************************************************************************************)
+(*************Ende Signalaufbereitung fuer das Meldesystem *******************************)
+(****************************************************************************************)
+
+(******* Ende ***************************************************************************)
+
+
+
+END_FUNCTION_BLOCK
