@@ -10,6 +10,11 @@
 *****************************************************************************************
 **  Datum         Version     Autor       Beschreibung                                 **
 -----------------------------------------------------------------------------------------
+    04.05.2015    3.9.05      Lohrenz     TAwriteTagData UMEM mit UII/EPC Adresse schreiben
+                                          StartAdd und Laenge limitiert
+                                          Bei Taste Schreiben wird BUFFER nicht mehr geloescht
+                                          F_Konfig hinzugefuegt wenn falsche Werte am StartAdd
+                                          oder Laenge stehen
     22.01.2015    3.9.04      Schulz      Umlaute entfernt
     18.09.2014    3.9.04      Hennig      Kommentar Meldeklassen angepasst
     15.09.2014    3.9.03      Lohrenz     Meldung "ohne Prozess" hinzugefuegt 
@@ -41,7 +46,7 @@
     18.11.2011    3.0.00      Meyer       Neuerstellung
 ****************************************************************************************)
 FUNCTION_BLOCK FB_Sick_RFU    // FB520
-TITLE   = 'Version 3.9.04'
+TITLE   = 'Version 3.9.05'
 VERSION : '3.9'
 AUTHOR  : VASS_V05
 NAME    : SICKRFU
@@ -54,7 +59,7 @@ VAR_INPUT
    Ver_Schreiben: BOOL;         // Verriegelung Schreiben 
    Lesen        : BOOL;         // Lesen extern pos.Flanke Start Tag lesen -> neg.Flanke Uebergabe Tag Daten   
    Schreiben    : BOOL;         // Start Schreiben extern
-   StartAdd     : INT:= 0;      // Start Wort beim Schreiben auf Datentraeger
+   StartAdd     : INT:= 0;      // Start Wort beim Schreiben auf Datentraeger max. 31
    Laenge       : INT:= 32;     // Anzahl Worte beim Schreiben auf Datentraeger       
    FM_Reset     : BOOL;         // Taktkontrolle abloeschen
    ZUeGes       : TIME:= T#10s; // Timeout Schreib/Lesevorgang
@@ -147,6 +152,8 @@ VAR_Temp
     Address     : INT;       // Temporarily address
     Temp        : INT;       // Temporarily variable
     Start_Adr   : INT;       // Start address
+    StartAdresse: INT;
+    EndAdresse  : INT;
  END_VAR
 
 
@@ -321,6 +328,7 @@ VAR
     F_CCError           : BOOL;     // Fehler CCError
     F_ReadError         : BOOL;     // Fehler Read Error
     F_Error             : BOOL;     // Fehler Datenempafng
+    F_Konfig            : BOOL;     // Fehler Konfig Startadresse oder Laenge
     iSchritt            : INT;      // Schritte
     iZaehler            : INT;      // Test
     iF_3Befehle         : INT;      // Test Fehlerzaehler mehr als 3 Befehle empfangen
@@ -351,6 +359,7 @@ VAR
     TCP_Receive         : TRCV;     // Instance TRCV
     strTempText         : STRING[64];                    //  
     arrTempText  AT strTempText  : ARRAY[1..66] OF BYTE; // String -> Array of Char
+    TMP_Buffer          : ARRAY [1..256] OF BYTE;        // Zwischenspeicher fuer UII Daten
     Buffer              : ARRAY [1..256] OF BYTE;        // TCP Buffer 
     DW_Buffer AT Buffer : ARRAY [1..64] OF DWORD;        // View of the buffer (DWord)
     Send_Buffer         : ARRAY [1..256] OF BYTE;        // Buffer for Telegram
@@ -552,8 +561,9 @@ ELSE
             xLesenExt   := R_TRIG_Lesen.Q AND NOT CFG.X0;
             iZaehler    := 0;
             FOR i := 1 TO 256 BY 1 DO
-                Buffer[i] :=    B#16#00; 
-            END_FOR;
+                 Buffer[i] :=    B#16#00;
+                 TMP_Buffer[i] := B#16#00; 
+            END_FOR; 
             FOR i:=1 TO 30 BY 1 DO
                 ST_RFU_DATA.READ_TAG.DATA_UII[i] := B#0;
             END_FOR;  
@@ -637,11 +647,7 @@ ELSE
             FM_Schreiben:= False;
             BUSY        := True;
             xSchreiben  := True; 
-            iSchritt    := 8;
-            FOR i := 1 TO 256 BY 1 DO
-                Buffer[i] :=    B#16#00; 
-            END_FOR;
-        
+            iSchritt    := 8;        
             IF R_TRIG_S_Schreiben.Q THEN            // Schreibauftrag Intern (Visu)
                 j := 2;
                 FOR i := StartAdd *2 TO iEndAdd *2 BY 1 DO
@@ -766,34 +772,46 @@ ELSE
         xCreateCommand    := True;
 
     // Write
-    3:  Command := 'sMN TAwriteTagData +60 ';   // Write tag command with first Part of Tag adress
+    3:  Command := 'sMN TAwriteTagData +64 ';   // Write tag command with first Part of Tag adress
         Start_Adr := 1; // Set Start adress
-        FOR i:= 25 TO  84 DO
-            Send_Buffer[Start_Adr+i] := Buffer[i-13]; // 
+        j:=16;
+        FOR i:= 25 TO  88 DO
+            Send_Buffer[Start_Adr+i] := TMP_Buffer[i-9]; // 
         END_FOR;
-        Send_Buffer[Start_Adr+85]   := B#16#20;         // Add blank
-        Send_Buffer[Start_Adr+86]   := B#16#33;         // Add Bank = 3
-        Send_Buffer[Start_Adr+87]   := B#16#20;         // Add blank
-        Send_Buffer[Start_Adr+88]   := arrStartAdd[3];  // Add Pointer (z.B. 0)
-        Send_Buffer[Start_Adr+89]   := arrStartAdd[4];  // Add Pointer
-        Send_Buffer[Start_Adr+90]   := arrStartAdd[5];  // Add Pointer
-        Send_Buffer[Start_Adr+91]   := arrStartAdd[6];  // Add Pointer
-        Send_Buffer[Start_Adr+92]   := B#16#20;         // Add blank
-        Send_Buffer[Start_Adr+93]   := arrLaenge[3];    // Add Wordcounter (z.B. +32) 
-        Send_Buffer[Start_Adr+94]   := arrLaenge[4];    // Add Wordcounter 
-        Send_Buffer[Start_Adr+95]   := arrLaenge[5];    // Add Wordcounter
-        Send_Buffer[Start_Adr+96]   := arrLaenge[6];    // Add Wordcounter
-        Send_Buffer[Start_Adr+97]   := B#16#20;         // Add blank 
-        Send_Buffer[Start_Adr+98]   := B#16#38;         // Add Retry = 8 
-        Send_Buffer[Start_Adr+99]   := B#16#20;         // Add blank 
-        Send_Buffer[Start_Adr+100]  := arrDataL[3];     // Add Datalength (z.B. +128)
-        Send_Buffer[Start_Adr+101]  := arrDataL[4];     // Add Datalength 
-        Send_Buffer[Start_Adr+102]  := arrDataL[5];     // Add Datalength
-        Send_Buffer[Start_Adr+103]  := arrDataL[6];     // Add Datalength
-        Send_Buffer[Start_Adr+104]  := B#16#20;         // Add blank 
-        Address := LEN(strDataL)+1 +Start_Adr +100;
-        (*Convert HEX --> ASCII HEX*)
-        FOR j:=3 TO 66 DO
+        Send_Buffer[Start_Adr+89]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+90]   := B#16#33;         // Add Bank = 3
+        Send_Buffer[Start_Adr+91]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+92]   := arrStartAdd[3];  // Add Pointer (z.B. 0)
+        Send_Buffer[Start_Adr+93]   := arrStartAdd[4];  // Add Pointer
+        Send_Buffer[Start_Adr+94]   := arrStartAdd[5];  // Add Pointer
+        Send_Buffer[Start_Adr+95]   := arrStartAdd[6];  // Add Pointer
+        Send_Buffer[Start_Adr+96]   := B#16#20;         // Add blank
+        Send_Buffer[Start_Adr+97]   := arrLaenge[3];    // Add Wordcounter (z.B. +32) 
+        Send_Buffer[Start_Adr+98]   := arrLaenge[4];    // Add Wordcounter 
+        Send_Buffer[Start_Adr+99]   := arrLaenge[5];    // Add Wordcounter
+        Send_Buffer[Start_Adr+100]   := arrLaenge[6];    // Add Wordcounter
+        Send_Buffer[Start_Adr+101]   := B#16#20;         // Add blank 
+        Send_Buffer[Start_Adr+102]   := B#16#33;         // Add Retries (3 Frequency)
+        Send_Buffer[Start_Adr+103]   := B#16#32;         // Add Retries (Channelhopping)
+        Send_Buffer[Start_Adr+104]   := B#16#20;         // Add blank 
+        Send_Buffer[Start_Adr+105]  := arrDataL[3];     // Add Datalength (z.B. +128)
+        Send_Buffer[Start_Adr+106]  := arrDataL[4];     // Add Datalength 
+        Send_Buffer[Start_Adr+107]  := arrDataL[5];     // Add Datalength
+        Send_Buffer[Start_Adr+108]  := arrDataL[6];     // Add Datalength         
+        IF arrDataL[5] = BYTE#16#20 THEN
+            Send_Buffer[Start_Adr+107] := B#16#20;
+            Address :=109;
+        ELSIF arrDataL[6] = BYTE#16#20 THEN
+            Send_Buffer[Start_Adr+108] := B#16#20;
+            Address :=110;
+        ELSE
+            Send_Buffer[Start_Adr+109]  := B#16#20;         // Add blank
+            Address := 111;
+        END_IF;        
+       (*Convert HEX --> ASCII HEX*)        
+        StartAdresse := 3;
+        EndAdresse := (Laenge * 2) + 2;
+        FOR j:= StartAdresse TO EndAdresse DO
             Temp := BYTE_TO_INT(SHR(IN:=arrTempText[j], N:=4));
             FOR i:=1 TO 2 DO
                IF Temp > 9 THEN
@@ -808,8 +826,8 @@ ELSE
         END_FOR;
         Send_Buffer[1]  := B#16#00;     // Overwrite string length
         Send_Buffer[2]  := B#16#02;     // Add [STX]
-        Send_Buffer[Start_Adr+233] := B#16#03;    // Add [ETX]   
-        TCP_SEND.LEN    := 234;         // Command length  
+        Send_Buffer[Address] := B#16#03;    // Add [ETX]   
+        TCP_SEND.LEN    := Address + 1;         // Command length  
         xCreateCommand  := True;
     
     // Timer
@@ -918,6 +936,9 @@ ELSE
                     Address    := Address + 1;
                 END_FOR;  
             END_FOR;
+            
+            TMP_BUFFER := BUFFER;
+            
             xRead := True;
 
         // No Read
@@ -957,6 +978,11 @@ IF iZaehler >= 4 THEN        // Test
     iZaehler := 0;
 END_IF;
 
+IF ((StartAdd < 0) OR (StartAdd > 31) OR (Laenge < 1) OR (Laenge > 32- StartAdd)) AND ST_BA.En_Stoe THEN
+    F_Konfig := TRUE;
+ELSE
+    F_Konfig := FALSE;
+END_IF;
 
 // Fehler Reset
 IF ((ST_BA.Quit OR NOT ST_BA.En_Stoe) AND Stoe AND NOT xoProz AND NOT ST_BA.K92_PoT ) OR xReset THEN
@@ -966,6 +992,7 @@ IF ((ST_BA.Quit OR NOT ST_BA.En_Stoe) AND Stoe AND NOT xoProz AND NOT ST_BA.K92_
     F_CCError       := False;
     F_ReadError     := False;
     F_Error         := False;
+    F_Konfig        := False;
     iCommand        := 0; 
     iSchritt        := 0; 
     BUSY            := False;
@@ -1079,7 +1106,8 @@ Stoe := F_TCPConnect
      OR F_NoRead
      OR F_CCError
      OR F_ReadError
-     OR F_Error;
+     OR F_Error
+     OR F_Konfig;
 
 // Verkettete Stoerung
 VkStoe_Out:= VkStoe_In OR Stoe;
@@ -1275,7 +1303,7 @@ MSYS.xF_8   := F_Error;                     // STE/Datenempfang
 MSYS.xF_9   := F_ReadError;                 // STE/Lesefehler
 MSYS.xF_10  := xWiederholen;                // MT0/Wiederholung Lesen
 MSYS.xF_11  := xoProz;                      // MT0/Ohne Prozess
-MSYS.xF_12  := False;
+MSYS.xF_12  := F_Konfig;                    // STE/Startadresse oder Laenge falsch
 MSYS.xF_13  := False; 
 MSYS.xF_14  := False; 
 MSYS.xF_15  := False; 
