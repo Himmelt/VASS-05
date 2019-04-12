@@ -1,0 +1,1099 @@
+(*****************************************************************************************
+**                                                                                      **
+**  Copyright  2013             SIEMENS AG I IA/DT, D-90475 Nuernberg                   **
+**  All Rights Reserved         VOLKSWAGEN AG, 38436 Wolfsburg                          **
+**                              AUDI AG, D-85045 Ingolstadt                             **
+**                                                                                      **
+******************************************************************************************
+**                                                                                      **
+** Aenderungsjournal  :                                                                 **
+******************************************************************************************
+**  Datum       Version     Autor               Beschreibung                            **
+---------------------------------------------------------------------------------------------------
+    20.01.2017    3.1.09       Michael Schulz      Blink1 durch "BLINK_L" ersetzt  
+    16.06.2016    3.1.08       Michael Schulz      Start wird bei Anwahl Hand nach TeilAutomatik Anwahl wird nicht mehr beim ersten Mal zurueckgesetzt 
+                                                   Zykluszeitoptimierung: blkmov von Struktur statt Zuweisung
+    04.02.2016    3.1.07       Michael Schulz      Vorrang Typen in Vorschau FIFO optimiert, Vorrang Sollwert fuellen (x6) vor zufahren optimiert
+                                                   Px_Minwert_plus Inkrementierung optimert (Vorrang Typen in FIFO)
+    09.12.2015    3.1.06       Michael Schulz      Ruecksetzen Blockfreigabe bei Teilauto Einfach und cfg Auto 
+                                                   Blockfahrweise ohne vorherige Hand Anwahl
+    27.07.2015    3.1.05       Michael Schulz      Absprung von FB580 v3.1.04
+                                                   cfg.X5 auf ST_Typverwaltung ablegen, UDT694 ST_TYPVERWALTUNG_V2 angepasst
+                                                   Warnmeldung "VorschauAus" bei Vorschaudaten und Abschaltung der Vorschau
+                                                   UDT694 ST_TYPVERWALTUNG_V2 angepasst
+                                                   Reset: weitere Variablen hinzugefuegt 
+                                                   Anpassung an IEC Norm (BYTE#0 statt 0)
+    27.05.2015    3.1.04       Michael Schulz      Beschriftung cfg.x3/x4 korrigiert
+                                                   Verzoegerung Warnmeldung "keine Anforderung ein Teil zu bauen" um 2s
+                                                   Stoermeldung "Typverwaltung Start Aus" nach 45s anzeigen
+                                                   Bei Anwahl "TeilAuto" "Einfach" und allen Verhaeltnissen=0, 
+                                                   wird der "Start" wieder abgeworfen 
+    02.02.2015    3.1.03       Michael Schulz      Aenderung der Konfiguration nur nach Abwahl "Auto"
+    15.12.2014    3.1.02       Michael Schulz      mit cfg.x9: Nur komplette Bloecke fahren (Empfehlung cfg.x9=0)
+                                                   Animation fuer Freigabekreis bei Vorwahl Start korrigiert
+                                                   Uebernahme der Konfiguration bei Abwahl "Start"
+    10.10.2014    3.1.01       Michael Schulz      iPx_Minwert_Plus in allen FB581 wird auf 0 gesetzt, 
+                                                   wenn irgendein anderer Speicher auf/unter den Minwert sinkt.
+    10.09.2014    3.1.00       Michael Schulz      Anzeige Blockgroesse in VISU, neues VISU Element
+    01.07.2014    3.0.04       Michael Schulz      Bei gesetzter Auftranf, Blockfahrweise und 
+                                                   NOT Cfg_X7 werden Bloecke 
+                                                   nach Bedarf gebaut, andernfalls alternierend
+                                                   Cfg_X8 Speicher "leer" Meldung aus
+                                                   UDT ST_TYPVERWALTUNG_V2 erweitert
+    16.06.2014    3.0.03       Michael Schulz      zus. Meldung: "keine Anforderung ein Teil zu bauen"
+
+    09.04.2014    3.0.02       Michael Schulz      bei abgearbeiteter Vorschau (Cfg.X5) wird der Speicher zusetzlich 
+                                                   zum Minwert bis zum Sollwert gefuellt
+    30.01.2014    3.0.01       Michael Schulz      verbesserte Fuellstandssteuerung bei Stoergroessen mit phys. 
+                                                   FIFO (ohne Auftragsverwaltung und ohne Bauprogramm)
+                                                   naechster Bauauftrag wird jeden Takt neu berechnet
+                                                   Cfg.X5: 1= VS mit staendiger Berechnung der Typanforderung. 
+                                                   Angeschlossener FIFO=physikalischer FIFO     
+    26.11.2013    3.0.00       Michael Schulz      Kopie von FB_TYP_BETRIEBSARTEN FB576 v3.2.04, Zykluszeitoptimierung
+ *****************************************************************************************)
+
+
+FUNCTION_BLOCK FB_TYP_BETRIEBSARTEN_V3    // FB 583 Baustein fuer die Anlagensteuerung
+TITLE   = 'Version 3.1.09'
+VERSION : '3.1'
+AUTHOR  : VASS_V05
+NAME    : TYPKB_V3
+FAMILY  : TYPKB_V3
+
+
+
+VAR_INPUT               
+    PROD_STEHT              : BOOL;         //Produktion steht. Ist dieses Bit gesetzt, steht die Produktion 
+                                            //in dieser ARG
+    Frg_1                   : BOOL;         //Freigabe Vorwahlen
+    Px_RB_INPOS             : BOOL;
+    RESET_Zaehler           : BOOL := 0;    //Reset u.a. fuer Zaehler bei Blockbau/VH Fahrt
+    ZVerzVF                 : TIME := T#100s;// Zeitwert Umschaltung Vorschau auf Fuellstand
+    Offset_Austrag_Verbau   : INT := 1;     //default=1, Takte zwischen Austragepunkt der Vorschaudaten und Verbauort. z.B. Austragepunkt 4 Takte vor Verbauort-->Offset min. 4
+    _Cfg                    : WORD;         // X0:Fuellst. Ein, X1:Einzel/Blockfahrw., X2:VS aus Bauprog., X3:OhneVZ, X4:Ohne SPBER, X5:1= Fuellst mit VS,zyklusgenau, X6:bei (cfg.x5 AND cfg.x6) leere Sp. fuellen, bevor Anlage voll; 
+                                            // X7:Bloecke nach Bedarf bauen; X8: Speicher "leer" Meldung aus
+            Cfg AT _Cfg: STRUCT             // WORD -> BOOL 
+            X8         : BOOL;  // Speicher "leer" Meldung aus
+            X9         : BOOL;  // Fuellstand: Blockstart bei hoechstem Bedarf abschalten (0: Block von 
+                                //Typ mit heochstem Bedarf wird gestartet und minimal 1 Teil gebaut und 
+                                //maximal bis zur Blockgoresse). X9=true setzen bei reiner Fahrt auf Behaelter
+            
+            X10        : BOOL;  // Reserve
+            X11        : BOOL;
+            X12        : BOOL;
+            X13        : BOOL;
+            X14        : BOOL;
+            X15        : BOOL;  
+            X0         : BOOL;  // Fuellstandsfahrweise Ein
+            X1         : BOOL;  // 0= Auf Einzelfw./ 1= Blockfahrw.
+            X2         : BOOL;  // 0= VS aus /1= Typen von FIFO ("Vorschau"/Sync./Seq) FIFO=Bauprogramm
+            X3         : BOOL;  // Button fuer Funktion "OhneVZ" an
+            X4         : BOOL;  // Button fuer Funktion "ohne SPBER" an    
+            X5         : BOOL;  // 1= VS mit staendiger Berechnung der Typanforderung. Angeschlossener FIFO=physikalischer FIFO  
+            X6         : BOOL;  // bei (cfg.x5 AND cfg.x6) generell x6 immer einschalten. mit x6: leere Speicher auf Sollwert fuellen, bevor sich Anlage 
+                                // mit einem Typ aus Vorschaufenster voll faehrt. Bei "langen" Anlagen d.h. Anlagentakte > Teile in Speicher koennte es 
+                                // mit cfg.x6 zu abrissen kommen daher ist nur bei Problemen in x6 abzuschalten     
+            X7         : BOOL;  // Bloecke nach Bedarf bauen, ansonsten alternierend
+        END_STRUCT;
+    BMK                     : STRING[25];   //BMK
+    VkStoe_In               : BOOL;         //Verkettete Stoerung
+END_VAR
+
+
+VAR_OUTPUT   
+    Typvorwahl              : INT;          //angewaehlter Typ, muss an Typvorwahl der kaskadierten Typsteuerungs
+                                            // Bausteine angeschlossen werden    
+    Parametrierfehler       : INT;          //0 = pruefung verlief ohne Fehler, 1..32 = Puffergroessen falsch 
+                                            //parametriert (SOLL und ISTW = 0, MAXW < Sollwert, MIN > MAX oder 
+                                            //Blockgroesse > MAXW), 33 = Typnummer doppelt, 
+    Token_Blockbau          : BOOL;         //wenn Token=1 auf dem Bus liegt kann vom ersten Baustein in 
+                                            //Blockfahrweise das Token genommen werden und ein Block gebaut 
+                                            //werden. Nachh Vollendug wird das Token wieder zurueckgegeben
+                                            //(Typ_FIFO_Austragen durch die Freigabe gesetzt)
+    Puffer_OK_FUER_VS       : BOOL;         //Puffer ist ausreichend gefuellt fuer Betrieb von VS (Umschalt auf VS bei Puffer=Soll, Umschalt auf Fuellst bei Puffer 30%). 
+                                            //Jeder Typ der auf Soll ist schreibt eine 1. Alle anderen 0. Rueckmeldung an Betriebsparam Baustein   
+    Typ_FIFO_Austragen      : BOOL;         //veranlasst, den FIFO das erste Element auszutragen
+    
+    
+    
+    Stoe                    : BOOL;         //Stoerung
+    Warn                    : BOOL;         //Warnung
+    VkStoe_Out              : BOOL;         //Verkettete Stoerung
+END_VAR
+
+VAR_IN_OUT
+    ST_TYPVERWALTUNG        : ST_TYPVERWALTUNG_V3;  //gibt Betriebsparameter der Strg an kask Bausteine weiter   
+    ST_Meld                 : Meldungspuffer;    //Meldestruktur
+END_VAR
+
+
+VAR_TEMP    
+    TempPointerMsys         : ANY;          // Hilfsvariable
+    TempPointerFlanken      : ANY;          // Hilfsvariable
+    TempPointerMeldpuffer   : ANY;          // Hilfsvariable
+    erg_SFC20               : INT;          // Rueckgabewert SFC20
+    
+    pMeldFeld AT TempPointerMsys: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT; 
+                               
+                               
+    pMeldAbb AT TempPointerFlanken: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT;
+                               
+    
+    pMeldDBNR AT TempPointerMeldpuffer: STRUCT 
+                                  BYTE0 :BYTE;  // Byte 0 
+                                  TYP   :BYTE;  // Byte 1        Daten/Parametertyp 
+                                  ANZ   :WORD;  // Byte 2+3      Laenge der Variablen 
+                                  DBNR  :WORD;  // Byte 4+5      DB-Nummer 
+                                  BZ    :DWORD; // Byte 6 bis 10 Bereichszeiger 
+                               END_STRUCT;
+END_VAR
+
+
+VAR
+    _dwVisuWerte1           : DWORD;        // Statusdoppelword 1 an VISU (Buttonanimation)  
+        dwVisuWerte1 AT _dwVisuWerte1: STRUCT        // DWORD -> BOOL
+            B3         : BYTE ;//Anim. Button (l. nibble) leer/ (h. nibble) "Ohne Speicher Beruecksichtigung"
+            B2         : BYTE ;//Anim. Button (l. nibble) "Vorwahl TeilAuto"/ (h. nibble) "Vorwahl Ohne VZ"
+            B1         : BYTE ;//Anim. Button (l. nibble) "Vorwahl Auto"/ (h. nibble) "Mit Alle"
+            B0         : BYTE ;//Anim. Button (l. nibble) "VorwahlStart"/ (h. nibble) "Vorwahl"
+        END_STRUCT;
+    _dwVisuWerte2           : DWORD;        // Statusdoppelword 2 an VISU (Buttonanimation)
+        dwVisuWerte2 AT _dwVisuWerte2: STRUCT        // DWORD -> BOOL    
+            B3         : BYTE ;//leer
+            B2         : BYTE ;//leer
+            B1         : BYTE ;//Anim. Button (l. nibble) "Vorwahl Hand"/ (higher nibble) leer
+            B0         : BYTE ;//Anim. Button (l. nibble) "Einfach"/ (higher nibble) "Mehrfach"
+        END_STRUCT;
+    _dwVisuWerte3           : DWORD;        // Statusdoppelword 2 an VISU (Buttonanimation)
+        dwVisuWerte3 AT _dwVisuWerte3: STRUCT        // DWORD -> BOOL
+            B3      : BYTE ;//leer
+            B2      : BYTE ;//leer
+            B1      : BYTE ;//Automatikfahrweisen
+            X0      : BOOL ;//Animation fuer Freigabekreis bei Vorwahl Start
+            X1      : BOOL ;//Animation fuer Freigabekreis "Vorwahl"
+            X2      : BOOL ;//Animation fuer Freigabekreis bei Vorwahl_AUTOMATIK
+            X3      : BOOL ;//Animation fuer Freigabekreis bei Vorwahl_TEILAUTOMATIK Einf/Mehrf
+            X4      : BOOL ;//Animation fuer Freigabekreis bei Vorwahl (fuer Auto,TeilAuto, Hand)
+            X5      : BOOL ;//leer
+            X6      : BOOL ;//leer
+            X7      : BOOL ;//leer
+        END_STRUCT;
+    bVisuTasten             : BYTE;         //Softkeys 01 von VISU    
+(*****************************Anfang Variablendeklaration********************************)
+(*********************************fuers Meldesystem***************************************)
+(****************************************************************************************)    
+    MSYS : STRUCT        
+        xF_1      : BOOL;
+        xF_2      : BOOL;
+        xF_3      : BOOL;
+        xF_4      : BOOL;
+        xF_5      : BOOL;
+        xF_6      : BOOL;
+        xF_7      : BOOL;
+        xF_8      : BOOL;
+        Flanken  : ARRAY[1..1] OF Byte;    
+    END_STRUCT;
+
+        AenderungsID : STRUCT
+        SNr    : WORD;
+        ANr    : BYTE;
+        Detail : BYTE;
+    END_STRUCT;
+    
+    Integritaet : BOOL;
+(**SIEMENS********************Anfang Variablendeklaration*************************************)
+(***********fuer bit-, byte-, wordgranulare Sicht von Variablen mit dem AT-Befehl**************)
+    xTeil_Auto              : BOOL;         //
+    xBlock_Einfach          : BOOL;         //
+    xBlock_Mehrfach         : BOOL;         //
+    xAUTO_VS                : BOOL;         //AUTO Konfig Fahrt ueber Bauprogramm FIFO (Seq., Sync., Vorschau Fahrw.)
+    xAUTO_VS_PLUS           : BOOL;         //AUTO Konfig Fahrt ueber pyhsikalischen FIFO und Bauteilueberblick
+    xAUTO_Einzel_Zaehl      : BOOL;         //AUTO in Einzelfahrweise und Zaehlung
+    xAUTO_Block_Zaehl       : BOOL;         //AUTO in Blockfahrweise und Zaehlung
+    xAUTO_Block_synchron    : BOOL;         //AUTO in Blockfahrweise (synchrone Beauftragung)
+    xAUTO_VS_Block_Vergh    : BOOL;         //iPx_Minwert_Plus in allen FB581 ruecksetzen, wenn false und BLINK_L
+    xAUTO_VS_Einzel_Sequenz : BOOL;         //AUTO Vorschau Einzelfahrweise nach Sequenz
+    xAUTO_VS_MIT_FUELLSTAND : BOOL;         //AUTO Vorschau mit Fuellstandsberuecksichtigung
+    xFrg_Vorwahlen          : BOOL;         //FRG Vorwahl zur Umschaltg. der Steuerung (FRG bei E7 
+                                            //und Start aus)    
+    xOADaten_FUELLSTAND     : BOOL;         //auf 1, wenn VS und auf Fuellstand umgeschaltet. Auf 0 wenn Fahrt auf VS  
+    xS_Vorwahl              : BOOL;         //Taste Vorwahl Freigabe zur Umschaltung der Steuerung    
+    x_Vorwahl               : BOOL;         //Merker Vorwahl
+    R_TRIG_S_Vorwahl_Q      : BOOL;         //Positive Flanke Taster "Vorwahl" zur Umschaltung der Steuerung
+    R_TRIG_S_Vorwahl_Edge   : BOOL;         //Positive Flanke Taster "Vorwahl" Hifu
+
+    xS_VorwahlStart         : BOOL;         //Taste Vorwahl Start
+    x_VorwahlStart          : BOOL;         //Merker Vorwahl Start 
+    R_TRIG_S_Start_Q        : BOOL;         //Positive Flanke Taster Vorwahl "Start" zur Umschaltung der Steuerung
+    R_TRIG_S_Start_Edge     : BOOL;         //Positive Flanke Taster Vorwahl "Start" Hifu
+
+    xS_VorwahlHand          : BOOL;         //Taste Vorwahl Hand
+    x_VorwahlHand           : BOOL;         //Merker Vorwahl Hand
+    R_TRIG_S_Hand_Q         : BOOL;         //Positive Flanke Taster Vorwahl "Hand" zur Umschaltung der Steuerung
+    R_TRIG_S_Hand_Edge      : BOOL;         //Positive Flanke Taster Vorwahl "Hand" Hifu
+
+    xS_VorwahlTeilAuto      : BOOL;         //Taste Vorwahl TeilAuto
+    x_VorwahlTeilAuto       : BOOL;         //Merker Vorwahl Teilautomatik   
+    R_TRIG_S_TeilAuto_Q     : BOOL;         //Positive Flanke Taster Vorwahl "TeilAuto" zur Umschaltung der Steuerung
+    R_TRIG_S_TeilAuto_Edge  : BOOL;         //Positive Flanke Taster Vorwahl "TeilAuto" Hifu
+
+    xS_VorwahlOhneSPBER     : BOOL;         //Taste Vorwahl OhneSPBER
+    x_VorwahlOhneSPBER      : BOOL;         //Merker Vorwahl OhneSPBER
+    R_TRIG_S_OhneSPBER_Q    : BOOL;         //Positive Flanke Taster Vorwahl "OhneSPBER" zur Umschaltung der Steuerung
+    R_TRIG_S_OhneSPBER_Edge : BOOL;         //Positive Flanke Taster Vorwahl "OhneSPBER" Hifu
+
+    xS_VorwahlEinfach       : BOOL;         //Taste Vorwahl Einfach
+    x_VorwahlEinfach        : BOOL;         //Merker Vorwahl einfaches Auflegen
+    R_TRIG_S_Einfach_Q      : BOOL;         //Positive Flanke Taster Vorwahl "Einfach" zur Umschaltung der Steuerung
+    R_TRIG_S_Einfach_Edge   : BOOL;         //Positive Flanke Taster Vorwahl "Einfach" Hifu
+ 
+    xS_VorwahlMehrfach      : BOOL;         //Taste Vorwahl Einfach
+    x_VorwahlMehrfach       : BOOL;         //Merker Vorwahl mehrfaches Auflegen   
+    R_TRIG_S_Mehrfach_Q     : BOOL;         //Positive Flanke Taster Vorwahl "Mehrfach" zur Umschaltung der Steuerung
+    R_TRIG_S_Mehrfach_Edge  : BOOL;         //Positive Flanke Taster Vorwahl "Mehrfach" Hifu
+
+    xS_VorwahlAuto          : BOOL;         //Taste Vorwahl Auto
+    x_VorwahlAuto           : BOOL;         //Merker Vorwahl Auto  
+    R_TRIG_S_Auto_Q         : BOOL;         //Positive Flanke Taster Vorwahl "Auto" zur Umschaltung der Steuerung
+    R_TRIG_S_Auto_Edge      : BOOL;         //Positive Flanke Taster Vorwahl "Auto" Hifu
+
+    xS_VorwahlOhneVZ        : BOOL;         //Taste Vorwahl Vorschauzaehler nicht beruecksichtigen
+    x_VorwahlOhneVZ         : BOOL;         //Merker Vorwahl Vorschauzaehler nicht beruecksichtigen 
+    R_TRIG_S_OhneVZ_Q       : BOOL;         //Positive Flanke Taster Vorwahl "Ohne VZ" zur Umschaltung der Steuerung
+    R_TRIG_S_OhneVZ_Edge    : BOOL;         //Positive Flanke Taster Vorwahl "Ohne VZ" Hifu
+
+    xStoe                   : BOOL;         //Meldung Stoerung aktiv
+    xWarn                   : BOOL;         //Meldung Warnung aktiv
+    xWart                   : BOOL;         //Meldung Wartung aktiv
+    
+    xF_TYPSTRG_NICHT_AUTO   : BOOL;         //Die Automatikfahrweise der Typsteurung ist 
+                                            //ausgeschaltet (es wird in Hand oder Teilauto gefahren)
+    xF_keine_Anforderung    : BOOL;         //keine Anforderung fuer Teilebau wird generiert
+    xF_Typverw_Off          : BOOL;         //Typverwaltung Zeit x abgeschaltet
+
+    xS_Anwahl_MIT_ALLE      : BOOL;         //Taste Anwahl_MIT_ALLE
+    x_Anwahl_MIT_ALLE       : BOOL;         //Merker Anwahl_MIT_ALLE
+    R_TRIG_S_MIT_ALLE_Q     : BOOL;         //Positive Flanke Taster Vorwahl "Mit Allen Typen" zur Umschaltung der Steuerung
+    R_TRIG_S_MIT_ALLE_Edge  : BOOL;         //Positive Flanke Taster Vorwahl "Mit Allen Typen" Hifu
+   
+    //zaehlt Durchlaeufe, die das Token vorhanden ist und nicht abgeholt wird. Wenn Token nicht da ist
+    //, wird der Zaehler zurueckgesetzt. bei Anzahl x wird Token geloescht (blockfahrweise einfach) bzw.
+    //Blockfertigmeldung der kask Typsteuerung auf FALSE gesetzt 
+    Blockfreigabe           : BOOL;         //Freigabe Block/Bloecke zu fahren 
+    Blockfreigabezaehler    : INT := 0;
+    Blockfreigabe_Wartezeit : INT := 150;   //Wartezeit bis 1 Satz neuer Bloecke begonnen wird
+    INDEX                   : INT;          //Laufindex fuer Array
+    Zaehler                 : INT;          //Zaehler fuer Anzahl der Typen    
+    Ohne_Auftragsdaten_verz : TON;          //Einschaltverzoegerung: Wenn Fifo x Zeit leer, dann auf Fellstand schwenken
+    ST_TYPVERWALTUNG_T      : ST_TYPVERWALTUNG_V3; 
+    Zaehler16               : INT := 1;     //Zaehler, welcher von 1 bis 16 zaehlt und in jedem Zyklus 
+                                            //inkrementriert wird bis 16 und dann auf 1 rueckgesetzt wird
+    TON_Start_Off           : TON ;         //Verzoegerung Stoermeldung "Typverwaltung Start Aus"
+    TON_Warn_keine_Anf      : TON ;         //Verzoegerung Warnmeldung "keine Anforderung ein Teil zu bauen"
+
+    END_VAR
+(******* Kurze Bausteinbeschreibung ******************************************************
+Dieser Baustein regelt die einzelnen Fahrweisen der Typsteuerung (Auto,Teil/Auto,Hand) bzw. 
+die Anlagenfahrweisen Fuellstand und/oder Vorschau. Die Bausteine FB577 (kaskadierte 
+Typsteuerungsbaustein) werden von diesem Baustein gesteuert.
+*****************************************************************************************)
+
+(*Konfiguration*)
+Cfg.X0   := Cfg.X0;      (* Fuellstandsfahrweise Ein *)
+Cfg.X1   := Cfg.X1;      (* 0= Auf Einzelfw./ 1= Blockfahrw. *)
+Cfg.X2   := Cfg.X2;      (* 0= VS aus /1= Typen von FIFO ("Vorschau"/Sync./Seq) FIFO=Bauprogramm *)
+Cfg.X3   := Cfg.X3;      (* Button fuer Funktion "OhneVZ" an *)
+Cfg.X4   := Cfg.X4;      (* Button fuer Funktion "ohne SPBER" an *)
+Cfg.X5   := Cfg.X5;      (* 1= VS mit staendiger Berechnung der Typanforderung. Angeschlossener FIFO=physikalischer FIFO *)
+Cfg.X6   := Cfg.X6;      (* bei (cfg.x5 AND cfg.x6) generell x6 immer einschalten. mit x6: leere Speicher auf Sollwert fuellen, bevor sich Anlage 
+                            mit einem Typ aus Vorschaufenster voll faehrt. Bei "langen" Anlagen d.h. Anlagentakte > Teile in Speicher koennte es 
+                            mit cfg.x6 zu abrissen kommen daher ist nur bei Problemen in x6 abzuschalten  *)
+Cfg.X7   := Cfg.X7;      (* Bloecke nach Bedarf bauen, ansonsten alternierend *)
+Cfg.X8   := Cfg.X8;      (* Speicher "leer" Meldung aus *)
+Cfg.X9   := Cfg.X9;      (* Fuellstand: Blockstart bei hoechstem Bedarf abschalten (0: Block von 
+                                Typ mit heochstem Bedarf wird gestartet und minimal 1 Teil gebaut und 
+                                maximal bis zur Blockgoresse)*)
+Cfg.X10  := Cfg.X10;     (* *)
+Cfg.X11  := Cfg.X11;     (* *)
+Cfg.X12  := Cfg.X12;     (* *)
+Cfg.X13  := Cfg.X13;     (* *)
+Cfg.X14  := Cfg.X14;     (* *)
+Cfg.X15  := Cfg.X15;     (* *)
+
+(******************************************************************************
+ueberpruefung der Parametrierung
+******************************************************************************)
+erg_SFC20:=BLKMOV (srcblk:= ST_TYPVERWALTUNG, dstblk:= ST_TYPVERWALTUNG_T); // Zykluszeitoptimierung
+
+//bei Neustart starte Test auf doppelte Typen
+IF "Neustart" OR RESET_Zaehler THEN   
+    RESET_Zaehler                          := True;
+    ST_TYPVERWALTUNG_T.P_Typ              := 0;
+    ST_TYPVERWALTUNG_T.P_Bedarf           := 0;
+    x_VorwahlHand                          := FALSE;
+    x_VorwahlTeilAuto                      := FALSE;
+    x_VorwahlAuto                          := FALSE;
+    xAUTO_Einzel_Zaehl                     := FALSE;
+    xAUTO_Block_Zaehl                      := FALSE;
+    xAUTO_Block_synchron                   := FALSE;
+    xAUTO_VS_Block_Vergh                   := TRUE; //iPx_Minwert_Plus in allen FB581 ruecksetzen, wenn false und BLINK_L
+    xAUTO_VS_Einzel_Sequenz                := FALSE;
+    xAUTO_VS_MIT_FUELLSTAND                := FALSE;
+    xOADaten_FUELLSTAND                    := TRUE; //Start im Fuellstand
+    x_VorwahlStart                         := FALSE;
+    x_Vorwahl                              := FALSE;
+    Parametrierfehler                      := 99;   //99=teste auf doppelte Typen
+    Typvorwahl                             := 0;    //Starte mit 1
+    Blockfreigabezaehler                   := 0;    
+    ST_TYPVERWALTUNG_T.ANZ_TYPEN_ARGX      := 8;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[1]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[2]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[3]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[4]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[5]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[6]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[7]   := 0;    
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[8]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[9]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[10]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[11]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[12]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[13]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[14]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[15]   := 0;
+    ST_TYPVERWALTUNG_t.Zaehlung_TYP_t[16]   := 0;
+    ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1    := 599;
+    ST_TYPVERWALTUNG_T.Zaehlpos_FIFO       := 599; 
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[1] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[2] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[3] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[4] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[5] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[6] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[7] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[8] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[9] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[10] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[11] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[12] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[13] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[14] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[15] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+    ST_TYPVERWALTUNG_T.FIFO_Position_Typmangel[16] := ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1;
+END_IF;    
+//ST_TYPVERWALTUNG := ST_TYPVERWALTUNG_T;//Schreiben der Struktur
+
+Typvorwahl              := ST_TYPVERWALTUNG_T.Typvorwahl;
+Parametrierfehler       := ST_TYPVERWALTUNG_T.Parametrierfehler;
+Token_Blockbau          := ST_TYPVERWALTUNG_T.Token_Blockbau;
+Puffer_OK_FUER_VS       := ST_TYPVERWALTUNG_T.Puffer_OK_FUER_VS;
+xAUTO_VS_Block_Vergh    := ST_TYPVERWALTUNG_T.AUTO_VS_Block_Vergh;
+
+(*****************************************************************************************
+//Freigabe fuer Vorwahl zur Umwahl der Typensteuerung
+*****************************************************************************************)
+xFrg_Vorwahlen := Frg_1; 
+
+(******* Tasten auswerten ****************************************************)
+IF PC_AKTIV = DWORD#16#00000000 THEN
+    bVisuTasten := Byte#0;
+END_IF;
+
+xS_VorwahlStart           := (bVisuTasten = 1);
+xS_Vorwahl                := (bVisuTasten = 2);
+xS_VorwahlAuto            := (bVisuTasten = 3);
+xS_Anwahl_Mit_ALLE        := (bVisuTasten = 4);
+xS_VorwahlTeilAuto        := (bVisuTasten = 5);
+xS_VorwahlOhneVZ          := (bVisuTasten = 6);
+xS_VorwahlOhneSPBER       := (bVisuTasten = 8);
+xS_VorwahlEinfach         := (bVisuTasten = 9);
+xS_VorwahlMehrfach        := (bVisuTasten = 10);
+xS_VorwahlHand            := (bVisuTasten = 11);
+
+(******* Vorwahlen *************************************************************
+Freigabe zum aendern der Betriebsart der Typensteuerung
+*******************************************************************************)
+R_TRIG_S_Vorwahl_Q := xS_Vorwahl AND NOT R_TRIG_S_Vorwahl_Edge; 
+R_TRIG_S_Vorwahl_Edge := xS_Vorwahl;
+
+IF R_TRIG_S_Vorwahl_Q AND xFrg_Vorwahlen THEN
+    
+    //x_Vorwahl wird gesetzt, wenn Parametrierfehlerueberpruefung erfolgreich
+    IF NOT x_Vorwahl THEN
+        Parametrierfehler                      := 99; //99=teste auf doppelte Typen
+    END_IF;
+    
+    x_Vorwahl := FALSE;
+    x_VorwahlStart := FALSE;
+    Typvorwahl := 0;
+END_IF;
+
+IF Parametrierfehler > 0 THEN     //wenn eins dann inkrementiere, wird durch Vergleich IF Neustart
+                                  // = 1 THEN... gesetzt
+    IF Parametrierfehler = 99 THEN
+        //kaskadierte Werte fuer Ueberpruefung auf Null setzen sonst liegen alte Werte auf dem Bus und
+        //werden als doppelt erkannt
+        ST_TYPVERWALTUNG_T.P_Typ              := 0;
+        ST_TYPVERWALTUNG_T.P_Bedarf           := 0;
+        
+        Typvorwahl := Typvorwahl + 1;
+        IF Typvorwahl >32 THEN //Stoppe Test und setze Typ wieder auf 0
+            Typvorwahl :=0;
+            Parametrierfehler := 100;   //setze Start fuer Test auf Parametrierungsfehler    
+        END_IF;
+    //ueberpruefung , dass eine Typnummer einmal vergeben wurde (alle nummern durchleiten, spaetestens 
+    //letzter kaskadier baustein bringt fehler auf Parametre Leitung)
+ELSIF Parametrierfehler = 100 THEN   //100 = Durchlauf ueber kask Bausteine verlief fehlerfrei
+        Parametrierfehler := 0;     //Ueberpruefung erfolgreich      
+        dwVisuWerte3.X0 := xFrg_Vorwahlen; //Animation fuer Freigabekreis "Vorwahl" bei Buttons
+        x_Vorwahl       := TRUE;  //kein Parametriefehler, weiteren Anwahlen ermoeglichen
+        x_VorwahlStart  := FALSE;
+    END_IF; //Ende Parametrierfehler = 99 /100
+//Ende Parametrierfehler > 0 und normaler Programmcode folgt.
+ELSE
+
+(******************************************************************************)
+
+(*******************************************************************************
+Freigabe zum Starten
+*******************************************************************************)
+
+R_TRIG_S_Start_Q := xS_VorwahlStart AND NOT R_TRIG_S_Start_Edge; 
+R_TRIG_S_Start_Edge := xS_VorwahlStart;
+
+IF R_TRIG_S_Start_Q  AND xFrg_Vorwahlen AND (x_VorwahlStart OR x_Vorwahl) AND
+                     ((x_VorwahlHand AND (Typvorwahl <> 0)) OR 
+                     (x_VorwahlTeilAuto AND (x_VorwahlEinfach OR x_VorwahlMehrfach)) 
+                     OR x_VorwahlAuto) THEN
+    x_VorwahlStart := NOT x_VorwahlStart;
+    x_Vorwahl := FALSE;
+    ST_TYPVERWALTUNG_T.P_Typ              := 0;
+    ST_TYPVERWALTUNG_T.P_Bedarf           := 0;
+    Typvorwahl := 0;
+    IF NOT x_Vorwahlstart THEN     
+        Parametrierfehler                  := 99; //99=teste auf doppelte Typen
+        Typvorwahl := 0;
+        x_Vorwahl := FALSE;   
+    END_IF;    
+END_IF;
+
+(*******************************************************************************
+Freigabe Typverwaltung in Hand
+*******************************************************************************)
+R_TRIG_S_Hand_Q := xS_VorwahlHand AND NOT R_TRIG_S_Hand_Edge; 
+R_TRIG_S_Hand_Edge := xS_VorwahlHand;
+
+IF R_TRIG_S_Hand_Q AND xFrg_Vorwahlen AND x_Vorwahl THEN
+    x_VorwahlHand := NOT x_VorwahlHand;
+    Typvorwahl          := 0;
+    Reset_Zaehler       := TRUE;
+    x_VorwahlTeilAuto   := FALSE;
+    x_VorwahlAuto       := FALSE;
+    Blockfreigabe       := FALSE;
+ELSIF NOT x_VorwahlHand THEN 
+      Typvorwahl := Typvorwahl;
+END_IF;
+                                                                                                           
+(******* Anwahl Mit Alle *************************************************************
+Anwahl Mit aller Typen bei Automatik Fahrweise
+*******************************************************************************)
+IF x_Anwahl_MIT_ALLE THEN
+    x_Anwahl_MIT_ALLE := 0;
+END_IF;
+
+R_TRIG_S_MIT_ALLE_Q := xS_Anwahl_Mit_ALLE AND x_VorwahlAuto AND NOT x_VorwahlStart AND NOT R_TRIG_S_MIT_ALLE_Edge; 
+R_TRIG_S_MIT_ALLE_Edge := xS_Anwahl_Mit_ALLE;
+
+IF R_TRIG_S_MIT_ALLE_Q THEN
+    x_Anwahl_MIT_ALLE := NOT x_Anwahl_MIT_ALLE;
+    x_VorwahlStart := FALSE;
+END_IF;
+
+                    
+(*******************************************************************************
+Freigabe Vorwahl Teilautomatik fahren 
+*******************************************************************************)
+R_TRIG_S_TeilAuto_Q := xS_VorwahlTeilAuto AND NOT R_TRIG_S_TeilAuto_Edge; 
+R_TRIG_S_TeilAuto_Edge := xS_VorwahlTeilAuto;
+
+IF R_TRIG_S_TeilAuto_Q AND xFrg_Vorwahlen AND x_Vorwahl THEN
+    x_VorwahlTeilAuto   := NOT x_VorwahlTeilAuto;  
+    Reset_Zaehler       := TRUE;
+    x_VorwahlAuto       := FALSE;
+    x_VorwahlHand       := FALSE;
+    xAUTO_Einzel_Zaehl  := FALSE;
+    xAUTO_Block_Zaehl   := FALSE;   
+    Typvorwahl := 0;
+    Blockfreigabe       := TRUE;  //Freigabe Block/Bloecke zu fahren
+END_IF;
+
+(******* Vorwahlen *************************************************************
+Freigabe fuer Vorschauzaehler nicht mit beruecksichtigen
+*******************************************************************************)
+R_TRIG_S_OhneVZ_Q := xS_VorwahlOhneVZ AND NOT R_TRIG_S_OhneVZ_Edge; 
+R_TRIG_S_OhneVZ_Edge := xS_VorwahlOhneVZ;
+
+IF R_TRIG_S_OhneVZ_Q AND xFrg_Vorwahlen AND x_Vorwahl THEN
+    x_VorwahlOhneVZ := NOT x_VorwahlOhneVZ;
+END_IF;
+
+(*******************************************************************************
+Freigabe Vorwahl OhneSPBER fahren
+*******************************************************************************)
+R_TRIG_S_OhneSPBER_Q := xS_VorwahlOhneSPBER AND NOT R_TRIG_S_OhneSPBER_Edge; 
+R_TRIG_S_OhneSPBER_Edge := xS_VorwahlOhneSPBER;
+
+IF R_TRIG_S_OhneSPBER_Q  AND xFrg_Vorwahlen AND x_Vorwahl AND NOT x_VorwahlStart THEN
+    x_VorwahlOhneSPBER  := NOT x_VorwahlOhneSPBER;
+END_IF;
+
+(*******************************************************************************
+Freigabe Vorwahl Einfach fahren 
+*******************************************************************************)
+R_TRIG_S_Einfach_Q := xS_VorwahlEinfach AND NOT R_TRIG_S_Einfach_Edge; 
+R_TRIG_S_Einfach_Edge := xS_VorwahlEinfach;
+
+IF R_TRIG_S_Einfach_Q  AND xFrg_Vorwahlen AND x_Vorwahl AND x_VorwahlTeilAuto THEN
+    x_VorwahlEinfach    := NOT x_VorwahlEinfach;
+    x_VorwahlMehrfach   := FALSE;
+    Token_Blockbau      := TRUE;
+    Blockfreigabe       := TRUE;  //Freigabe Block/Bloecke zu fahren
+    Blockfreigabezaehler := 0;  
+    Typvorwahl := 0;
+END_IF;
+(*******************************************************************************
+Freigabe Vorwahl Mehrfach fahren 
+*******************************************************************************)
+R_TRIG_S_Mehrfach_Q := xS_VorwahlMehrfach AND NOT R_TRIG_S_Mehrfach_Edge; 
+R_TRIG_S_Mehrfach_Edge := xS_VorwahlMehrfach;
+
+IF R_TRIG_S_Mehrfach_Q AND xFrg_Vorwahlen AND x_Vorwahl AND x_VorwahlTeilAuto THEN
+    x_VorwahlMehrfach := NOT x_VorwahlMehrfach;
+    x_VorwahlEinfach    := FALSE;
+    Token_Blockbau      := TRUE;
+    Blockfreigabe       := TRUE;  //Freigabe Block/Bloecke zu fahren, muss abgeloescht werden nach einem Blockdurchlauf bzw. 
+    Blockfreigabezaehler := 0;
+    Typvorwahl          := 0;
+END_IF;
+
+(*******************************************************************************
+Freigabe Vorwahl Typverwaltung in Automatik fahren 
+*******************************************************************************)
+R_TRIG_S_Auto_Q := xS_VorwahlAuto AND NOT R_TRIG_S_Auto_Edge; 
+R_TRIG_S_Auto_Edge := xS_VorwahlAuto;
+
+IF R_TRIG_S_Auto_Q  AND xFrg_Vorwahlen AND x_Vorwahl THEN
+    x_VorwahlAuto := NOT x_VorwahlAuto;
+    Reset_Zaehler           := TRUE;
+    x_VorwahlTeilAuto       := FALSE;
+    x_VorwahlHand           := FALSE;
+    Typvorwahl              := 0;
+
+    //Token ggf. bilden
+    IF (Cfg.X0 AND NOT Cfg.X2) THEN //Fuellstand
+        Token_Blockbau      := TRUE;     //Token fuer Blockfahrweise generieren
+    END_IF;
+        
+    IF (Cfg.X2 AND NOT Cfg.X5) THEN //Auf FIFO fahren (Vorschau, Synchron und Sequenz Fahrweise holt Daten aus FIFO)
+        IF Cfg.X0 THEN
+            Token_Blockbau  := TRUE; 
+        END_IF;
+    END_IF;     
+    
+    //Fahrt mit Vorschaudaten und gesamten Ueberblick der Teile in Anlage und Speicher
+    Token_Blockbau  := (Cfg.X5 AND NOT Cfg.X2) OR (Cfg.X2 AND NOT Cfg.X5);   
+END_IF;
+
+(*****************************************************************************************
+//Vorschaufahrweise: zu fahrender Typ aus FIFO holen und auf Bus Typvorwahl schreiben, 
+kask Bausteine setzen Anforderung und Freigabe zum austragen aus FIFO
+
+Umschaltung auf Fuellstandsfahrweise wenn FIFO=leer (Typvorwahl = 0)
+*****************************************************************************************)
+IF x_VorwahlAuto AND xAUTO_VS THEN   
+
+    Typ_FIFO_Austragen  := ST_TYPVERWALTUNG_T.FRG_Typ_FIFO_Austragen; //Typ aus FIFO austragen
+    ST_TYPVERWALTUNG_T.FRG_Typ_FIFO_Austragen := FALSE;
+
+    Typvorwahl          := ST_TYPVERWALTUNG_T.FIFO_0_Typ;//ersten Typ von FIFO laden
+ 
+    Ohne_Auftragsdaten_verz (IN:=ST_TYPVERWALTUNG_T.SPEICHER_IST_LEER,PT:= ZVerzVF);
+            
+    IF ( (Typvorwahl = 0 AND Ohne_Auftragsdaten_verz.Q) OR (NOT Puffer_OK_FUER_VS)) 
+        AND (NOT xAUTO_Block_Zaehl OR NOT xAUTO_Einzel_Zaehl) AND xAUTO_VS_MIT_FUELLSTAND THEN
+        xAUTO_Block_Zaehl       := Cfg.X1;
+        xAUTO_Einzel_Zaehl      := NOT Cfg.X1;
+        xOADaten_FUELLSTAND := TRUE;
+    END_IF;  
+    
+    //ELSE 
+        IF ((Token_Blockbau AND xAUTO_Block_Zaehl) OR xAUTO_Einzel_Zaehl) AND Puffer_OK_FUER_VS 
+          OR NOT xAUTO_VS_MIT_FUELLSTAND THEN
+            xAUTO_Block_Zaehl       := FALSE;
+            xAUTO_Einzel_Zaehl      := FALSE;
+            xOADaten_FUELLSTAND := FALSE;   //synchronisiere  
+        END_IF;
+    
+    //END_IF;        
+    xOADaten_FUELLSTAND := xOADaten_FUELLSTAND;
+    Puffer_OK_FUER_VS   := TRUE; //Puffer OK Bit setzen, welches gesetzt bleibt solange kask Bausteine genuegend Teile Inhalt haben    
+END_IF;
+(*****************************************************************************************)
+
+
+//xAUTO_VS_Block_Vergh setzen. 
+//xAUTO_VS_Block_Vergh wird rueckgesetzt in FB581 von einem Baustein der unter/gleich Minwert ist.
+//xAUTO_VS_Block_Vergh = False setzt alle iPx_Minwert_Plus in allen FB581 zurueck
+IF "BLINK_L" THEN
+    xAUTO_VS_Block_Vergh    := TRUE;
+END_IF;
+
+
+(*
+(******* Vorwahlen *************************************************************
+Freigabe fuer CKD
+*******************************************************************************)
+R_TRIG_S_VorwahlCKD(CLK := xS_VorwahlCKD AND xFrg_Vorwahlen);
+IF R_TRIG_S_VorwahlCKD.Q THEN
+    x_VorwahlCKD := NOT x_VorwahlCKD;
+END_IF;
+*)
+
+(*******************************************************************************
+Bei Blockfahrweise Einfach, startet der Blockfreigabezaehler sobald ein Block eines Typs 
+angefangen wurde (bei Puffer voll wird solange gewartet, bis min. ein Block eines Typs gebaut 
+wurde). Erreicht der Blockfreigabezaehler die gesetzte Grenze, dann wird Token_Blockbau und 
+damit die Erlaubnis Bloecke zu bauen vom Bus genommen. Die Vorwahl Start und Einfach fallen ab.
+Bei Blockfahrweise Mehrfach und AUTO_Block_Zaehl wird Blockfreigabezaehler staendig inkrementiert 
+und setzt die Blockfertigmeldungen (durch Flankenwechsel von Blockfreigabe) der Typen zurueck sobald
+ alle Typen fuer die Platz im Puffer war einmal gebaut wurden. Danach koennen die Typen bei Platz im Puffer ein weiteres mal gebaut werden.
+Die Blockfertigmeldung in kaskadierten Bausteinen wird geloescht um Bau eines neuen Blocks/VH Block zu ermoeglichen. 
+Eine Umschaltung zwischen EINFACH und MEHRFACH und begonnenen Block ist moeglich, wenn Start nicht 
+vorgewaehlt ist.
+*******************************************************************************)
+IF (x_VorwahlStart) THEN   
+    IF x_VorwahlEinfach (*AND NOT Token_Blockbau*) AND Blockfreigabezaehler = 0 THEN
+        Blockfreigabezaehler := 1;  
+    END_IF;
+  
+    IF Blockfreigabe AND (Blockfreigabezaehler > 0 OR x_VorwahlMehrfach OR xAUTO_Block_Zaehl) THEN  
+        IF Token_Blockbau THEN
+            Blockfreigabezaehler := Blockfreigabezaehler + 1;
+        ELSE
+            Blockfreigabezaehler := 1;  //Zaehler zyklisch ruecksetzen wenn kein TOKEN anliegt bzw. 
+                                        //Nicht zaehlen wenn VH EINFACH noch nicht begonnen wurde, 
+                                        //bei MEHRFACH und AUTO_Block_Zaehlwird immer gezaehlt
+        END_IF;
+    END_IF;
+
+    IF Blockfreigabe AND x_VorwahlEinfach AND Blockfreigabezaehler = Blockfreigabe_Wartezeit THEN   //Blockfreigabe-
+        //zaehler Wert Anpassen an Anlage, damit nicht wieder mit erstem Block begonnen wird, 
+        //bevor andere Bloecke abgearbeitet sind. Wert solte so gewaehlt werden, 
+        //dass genuegend Zeit verbleibt, dass ein Teil produziert werden kann und Roboter zur 
+        //Produktion des naechsten Teils in Position Verfahren kann       
+        Blockfreigabe       := FALSE;     //Signal zum loeschen der Blockfertigmeldungen in kask. Typstrg.
+        Token_Blockbau      := FALSE; //stoppe Blockfahrweise
+        x_VorwahlEinfach    := FALSE;  //Vorwahl Einfach rauswerfen
+        x_VorwahlStart      := FALSE;
+    END_IF;
+    
+    //Blockfreigabe toggeln, damit Blockfertigmeldung in kask Baustein rueckgesetzt wird, Zaehler 
+    //wird in der Zeit nicht hochgezaehlt   
+    IF (x_VorwahlMehrfach OR xAUTO_Block_Zaehl AND x_VorwahlAuto) AND Blockfreigabezaehler = Blockfreigabe_Wartezeit THEN
+        IF NOT Blockfreigabe THEN
+            Blockfreigabezaehler := 0;
+            Blockfreigabe   := TRUE;
+            Token_Blockbau  := TRUE;
+        ELSE
+            Blockfreigabe   := FALSE; //toggeln, Blockfreigabezaehler bleibt bei 7.Blockfreigabe =0 
+            //loescht Blockfertigmeldung in Bausteinen    //TOKEN := 1;
+        END_IF;
+    END_IF; 
+END_IF;
+ 
+
+END_IF; //Ende Programmcode nach Ueberpruefung ohne Parametrierfehler
+
+(****************************************************************************************
+ANZ_TYPEN_ARGX
+****************************************************************************************)
+IF ST_TYPVERWALTUNG_T.SP_Typ[Zaehler16].MIT_Px THEN
+    Zaehler := Zaehler + 1;    
+END_IF;    
+
+Zaehler16 := Zaehler16 + 1;
+IF Zaehler16 > 16 THEN  //bis 16 zaehlen und dann ruecksetzen und Ergebnis uebergeben
+    Zaehler16 := 1;
+    ST_TYPVERWALTUNG_T.ANZ_TYPEN_ARGX := Zaehler;   
+    Zaehler := 0;
+END_IF;
+(****************************************************************************************)
+
+//Sonderfall "Freigabe" Start, da von kaskadierten Bausteinen freigeschaltet
+IF x_VorwahlHand THEN
+    dwVisuWerte3.X0 := (Typvorwahl > 0);
+END_IF;        
+    
+//Sichtbarkeit "Ohne VZ" Button
+//dwVisuWerte3.X7 := Cfg.X3 OR Cfg.X5;   
+
+    
+//Wenn Zaehler Resettet wurde, dann Reset bit auf 0 setzen
+IF RESET_Zaehler THEN
+    ST_TYPVERWALTUNG_T.Reset_Zaehler:= Reset_Zaehler;
+    RESET_Zaehler := FALSE;
+ELSE    //IF Reset_Zaehler = 0
+    ST_TYPVERWALTUNG_T.Reset_Zaehler:= Reset_Zaehler;
+END_IF;
+ 
+(*****************************************************************************************
+Button CKD Fertigung einblenden 
+*****************************************************************************************)
+(*IF Cfg.X15 THEN
+    dwVisuWerte2.X16 := TRUE;
+ELSE
+    dwVisuWerte2.X16 := FALSE;
+END_IF;    *)
+
+    
+    
+    
+(*****************************************************************************)
+//Freigabe Minwert hochzaehlen, wenn keine Typanforderung
+//Quit / Wertaenderung
+// 1   /   1   = Nur Minwert von Typen im FIFO hochzaehlen, wenn keine Quittierung, dann restliche Typen hochzaehlen
+// 0   /   1   = Quittierung von Typ_kask: Minwert von Typ in FIFO hochgezaehlt
+// 1   /   0   = Minwert aller Typen um eins inkrementieren
+// 0   /   0   = Minwert nicht hochzaehlen
+  
+
+
+
+
+//Rueckkehr mit 1  / 0
+//oder 0 / 1 Quittierung Typ_kask hochgezaehlt 
+IF NOT (Typvorwahl = 0) 
+   OR (  (ST_TYPVERWALTUNG_T.Quit AND NOT ST_TYPVERWALTUNG_T.Wertaenderung)         
+   OR (NOT ST_TYPVERWALTUNG_T.Quit AND ST_TYPVERWALTUNG_T.Wertaenderung)  ) 
+   AND ST_TYPVERWALTUNG_T.Zaehlpos_FIFO = ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1 THEN
+    
+    //Ende mit hochzaehlen 0 / 0
+    ST_TYPVERWALTUNG_T.Quit                := FALSE;
+    ST_TYPVERWALTUNG_T.Wertaenderung       := FALSE;            
+//END_IF;
+
+//Rueckkehr mit 1  / 1, nichts wurde hochgezaehlt
+ELSIF ST_TYPVERWALTUNG_T.Quit AND ST_TYPVERWALTUNG_T.Wertaenderung  
+    AND ST_TYPVERWALTUNG_T.Zaehlpos_FIFO = ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1 THEN
+    
+    //naechster Durchlauf mit 1 /0 um alle Minwerte hochzuzaehlen
+    ST_TYPVERWALTUNG_T.Quit                := TRUE;
+    ST_TYPVERWALTUNG_T.Wertaenderung       := FALSE;            
+//END_IF;
+
+//Starte Ablauf
+ELSIF ST_TYPVERWALTUNG_T.Zaehlpos_FIFO = ST_TYPVERWALTUNG_T.MAX_FIFOLAENGE_1 
+      AND NOT ST_TYPVERWALTUNG_T.Quit AND NOT ST_TYPVERWALTUNG_T.Wertaenderung  THEN
+    //Start mit 1  / 1
+    ST_TYPVERWALTUNG_T.Quit                := TRUE;
+    ST_TYPVERWALTUNG_T.Wertaenderung       := TRUE;
+END_IF;
+
+(*****************************************************************************)
+
+
+(****************************************************************************************
+Abspeichern der Betriebsarten fuer die kaskadierten Typstrg. Bausteine
+Aenderung_Betriebsart gibt kaskadierten Bauteinen das Signal die Betriebsarten neu einzulesen, 
+da sich etwas geaendert hat. Ansonsten werden die Betriebsarten nicht neu abgefragt und die Werte 
+aus dem vorherigen Zyklus verwendet.
+****************************************************************************************)
+//Aenderung_Betriebsart := 1; //zum debuggen
+    //TODO Vorschlag von Siemens zum Variablen lesen und schreiben aufnehmen
+    ST_TYPVERWALTUNG_T.VORWAHL_HAND            := x_VorwahlHand;
+    ST_TYPVERWALTUNG_T.VORWAHL_TEILAUTOMATIK   := x_VorwahlTeilAuto;
+    ST_TYPVERWALTUNG_T.VORWAHL_AUTOMATIK       := x_VorwahlAuto;
+    ST_TYPVERWALTUNG_T.AUTO_Einzel_Zaehl       := xAUTO_Einzel_Zaehl;
+    ST_TYPVERWALTUNG_T.AUTO_Block_Zaehl        := xAUTO_Block_Zaehl;
+    ST_TYPVERWALTUNG_T.AUTO_Block_synchron     := xAUTO_Block_synchron;
+    ST_TYPVERWALTUNG_T.AUTO_VS_Block_Vergh     := xAUTO_VS_Block_Vergh; //AUTO Vorschau in Blkfw Vergangenheit
+    ST_TYPVERWALTUNG_T.AUTO_VS_Einzel_Sequenz  := xAUTO_VS_Einzel_Sequenz;//AUTO Vorschau Einzlfw nach Sequenz
+    ST_TYPVERWALTUNG_T.AUTO_VS_MIT_FUELLSTAND  := xAUTO_VS_MIT_FUELLSTAND;//AUTO Vorschau mit Fuellstandsber.
+    ST_TYPVERWALTUNG_T.VORWAHL_START           := x_VorwahlStart;
+    ST_TYPVERWALTUNG_T.VORWAHL_OHNE_VZ         := x_VorwahlOhneVZ;
+    ST_TYPVERWALTUNG_T.VORWAHL_OHNE_SPBER      := x_VorwahlOhneSPBER;
+    ST_TYPVERWALTUNG_T.Frg_Vorwahlen           := xFrg_Vorwahlen;
+    ST_TYPVERWALTUNG_T.Vorwahl                 := x_Vorwahl;
+    ST_TYPVERWALTUNG_T.Blockfreigabe           := Blockfreigabe; 
+    ST_TYPVERWALTUNG_T.P1bisP4_RB_INPOS        := Px_RB_INPOS; 
+    //ST_TYPVERWALTUNG_T.Reset_Zaehler:= Reset_Zaehler; 
+    ST_TYPVERWALTUNG_T.Blockfreigabe           := Blockfreigabe;   
+    ST_TYPVERWALTUNG_T.Anwahl_MIT_ALLE         := x_Anwahl_MIT_ALLE;
+ 
+    
+    ST_TYPVERWALTUNG_T.Typvorwahl              := Typvorwahl;
+    ST_TYPVERWALTUNG_T.Parametrierfehler       := Parametrierfehler;
+    ST_TYPVERWALTUNG_T.Token_Blockbau          := Token_Blockbau;
+    ST_TYPVERWALTUNG_T.Puffer_OK_FUER_VS       := Puffer_OK_FUER_VS;
+    ST_TYPVERWALTUNG_T.xAUTO_VS_PLUS           := xAUTO_VS_PLUS; 
+    ST_TYPVERWALTUNG_T.Cfg_X5                  := Cfg.X5;
+    ST_TYPVERWALTUNG_T.Cfg_X6                  := Cfg.X6; 
+    ST_TYPVERWALTUNG_T.Cfg_X7                  := Cfg.X7;
+    ST_TYPVERWALTUNG_T.Cfg_X8                  := Cfg.X8;
+    ST_TYPVERWALTUNG_T.Cfg_X9                  := Cfg.X9;   //Nur komplette Bloecke fahren
+    ST_TYPVERWALTUNG_T.Offset_Austrag_Verbau   := Offset_Austrag_Verbau;
+    
+    (******* Daten fuer die Visualisierung ***************************************************)
+
+    xF_TYPSTRG_NICHT_AUTO := NOT x_VorwahlAuto AND x_VorwahlStart;
+
+    ST_TYPVERWALTUNG_T.P1bisP4_VS_Fahrw_Konfig := xAUTO_VS;
+    ST_TYPVERWALTUNG_T.OADATEN_FuellstandBlock := xOADaten_FUELLSTAND;
+    
+    (******* Ausgabe und Anzeigewerte fuer die Visualisierung*********************************)
+    
+    //Animation fuer Freigabekreis bei Vorwahl Start    
+    dwVisuWerte3.X0 := xFrg_Vorwahlen 
+                        AND ((x_VorwahlStart OR x_Vorwahl) AND ((x_VorwahlHand AND (Typvorwahl>0)) 
+                            OR (x_VorwahlTeilAuto AND (x_VorwahlEinfach OR x_VorwahlMehrfach)) 
+                            OR  x_VorwahlAuto));                                        
+    //Animation fuer Freigabekreis "Vorwahl"
+    dwVisuWerte3.X1 := xFrg_Vorwahlen;
+        
+    //Animation fuer Freigabekreis bei Vorwahl_AUTOMATIK
+    dwVisuWerte3.X2 := xFrg_Vorwahlen AND NOT x_VorwahlStart AND x_Vorwahl AND x_VorwahlAuto;                                       
+    
+    //Animation fuer Freigabekreis bei Vorwahl_TEILAUTOMATIK Einf/Mehrf
+    dwVisuWerte3.X3 := xFrg_Vorwahlen AND NOT x_VorwahlStart AND x_Vorwahl AND x_VorwahlTeilAuto;   
+    
+    //Animation fuer Freigabekreis bei Vorwahl (fuer Auto,TeilAuto, Hand)
+    dwVisuWerte3.X4 := xFrg_Vorwahlen AND NOT x_VorwahlStart AND x_Vorwahl;     
+                
+    //Buttonanimation
+    //0: grau
+    //1: ausblenden
+    //2: gruen leuchtend
+    //6: gelb blinkend
+    //11: gruen blinkend
+    dwVisuWerte1.B0 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+    dwVisuWerte1.B1 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+    dwVisuWerte1.B2 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+    dwVisuWerte1.B3 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+
+    //Animation fuer Buttonhintergrund "Start"
+    IF (x_VorwahlStart) THEN
+        dwVisuWerte1.B0 := (*dwVisuWerte1.B0 OR*) BYTE#16#02; 
+    END_IF;
+    
+    //Animation fuer Buttonhintergrund "Vorwahl"
+    IF (x_Vorwahl) THEN
+        dwVisuWerte1.B0 := dwVisuWerte1.B0 OR BYTE#16#20; (*02: Flaeche GN   Text BK*)
+    END_IF;
+    dwVisuWerte1.B0 := dwVisuWerte1.B0;
+    //Animation fuer Buttonhintergrund "Auto"
+    IF (x_VorwahlAuto AND (x_VorwahlStart OR x_Vorwahl)) THEN
+        dwVisuWerte1.B1 := (*dwVisuWerte1.B1 OR*) BYTE#16#02; (*02: Flaeche GN   Text BK*)
+    END_IF; 
+    //Animation fuer Buttonhintergrund "Mit fuer alle Typen"
+    IF (x_VorwahlAuto AND x_Anwahl_Mit_ALLE) THEN
+        dwVisuWerte1.B1 := dwVisuWerte1.B1 OR BYTE#16#20; (*02: Flaeche GN   Text BK*)
+    END_IF; 
+    //Animation fuer Buttonhintergrund "TeilAuto"
+    IF (x_VorwahlTeilAuto AND (x_Vorwahl OR x_VorwahlStart)) THEN
+        dwVisuWerte1.B2 := (*dwVisuWerte1.B2 OR*) BYTE#16#02; (*02: Flaeche GN   Text BK*)
+    END_IF; 
+    
+    //Animation fuer Buttonhintergrund "Ohne Vorschau Zaehler"
+    IF  Cfg.X3 THEN                    //Sichtbarkeit "Ohne VZ" Button
+        IF (x_VorwahlOhneVZ AND (x_Vorwahl OR x_VorwahlStart) AND x_VorwahlTeilAuto) THEN
+            dwVisuWerte1.B2 := dwVisuWerte1.B2 OR BYTE#16#20; (*02: Flaeche GN   Text BK*)
+        END_IF;
+    ELSIF NOT Cfg.X3 THEN      
+        dwVisuWerte1.B2 := dwVisuWerte1.B2 OR BYTE#16#10; (*01: nicht sichtbar*)
+    END_IF;
+
+    //leer
+    //dwVisuWerte2.B3 := BYTE#16#02;
+    
+    //Animation fuer Buttonhintergrund "Ohne Speicher Beruecksichtigung"
+    IF Cfg.X4 THEN  
+        IF (x_VorwahlOhneSPBER AND (x_Vorwahl OR x_VorwahlStart) AND x_VorwahlTeilAuto) THEN
+            dwVisuWerte1.B3 := dwVisuWerte1.B3 OR BYTE#16#20; (*02: Flaeche GN   Text BK*)
+        END_IF;
+    ELSIF NOT Cfg.X4 THEN
+        dwVisuWerte1.B3 := dwVisuWerte1.B3 OR BYTE#16#10; (*01: nicht sichtbar*)
+    END_IF;
+    
+    dwVisuWerte2.B0 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+    dwVisuWerte2.B1 := BYTE#0;;//(*00: Flaeche GR   Text BK*)
+    
+    //Animation fuer Buttonhintergrund "Einfach", Blinken wenn Anwahl TeilAuto und nicht Einfach oder 
+    //Mehrfach gewaehlt
+    IF (x_VorwahlEinfach AND (x_Vorwahl OR x_VorwahlStart) AND x_VorwahlTeilAuto) THEN
+        dwVisuWerte2.B0 := (*dwVisuWerte2.B0 OR*) BYTE#16#02; (*02: Flaeche GN   Text BK*)
+    ELSIF (x_VorwahlTeilAuto AND (x_Vorwahl OR x_VorwahlStart)) AND  NOT x_VorwahlMehrfach 
+        //(*NOT (iVisuwerte9 = 2) AND  NOT (iVisuwerte10 = 2)*)
+        THEN
+        dwVisuWerte2.B0 := (*dwVisuWerte2.B0 OR*) BYTE#16#0B; (*0B: Flaeche GN   blink Text BK*)
+    END_IF;
+
+    //Animation fuer Buttonhintergrund "Mehrfach", Blinken wenn Anwahl TeilAuto und nicht Einfach 
+    //oder Mehrfach gewaehlt
+    IF (x_VorwahlMehrfach AND (x_Vorwahl OR x_VorwahlStart) AND x_VorwahlTeilAuto) THEN
+        dwVisuWerte2.B0 := dwVisuWerte2.B0 OR BYTE#16#20; (*02: Flaeche GN   Text BK*)
+    ELSIF (x_VorwahlTeilAuto AND (x_Vorwahl OR x_VorwahlStart)) AND  NOT x_VorwahlEinfach
+        (*NOT (iVisuwerte9 = 2) AND  NOT (iVisuwerte10 = 2)*) THEN
+        dwVisuWerte2.B0 := dwVisuWerte2.B0 OR BYTE#16#B0; (*0B: Flaeche GN   blink Text BK*)
+    END_IF;
+    
+    //Animation fuer Buttonhintergrund "Hand"
+    IF (x_VorwahlHand AND (x_Vorwahl OR x_VorwahlStart)) THEN
+        dwVisuWerte2.B1 := (*dwVisuWerte2.B1 OR*) BYTE#16#02; (*02: Flaeche GN   Text BK*)
+    END_IF;
+       
+    IF NOT x_VorwahlAuto THEN    //Konfigurationsaenderung der Auto Fahrweise nur bei Abwahl 
+        //von "Auto" moeglich
+        //Auswertung fuer die Fahrweise in Automatik fuer die Visu
+        //Pruefen, ob auch eine plausible Konfiguration vorgenommen wurde. 
+    
+        IF (NOT Cfg.X0 ) AND (NOT Cfg.X1 ) AND (NOT Cfg.X2) THEN//Keine Konfiguration //#0
+            dwVisuWerte3.B1 := BYTE#0; END_IF;            
+        
+        IF Cfg.X0 AND NOT Cfg.X1 AND NOT Cfg.X2 THEN //Fuellstand (Einzelfahrweise) //#1
+            dwVisuWerte3.B1 := BYTE#1; END_IF; 
+        
+        IF Cfg.X0 AND Cfg.X1 AND NOT Cfg.X2 
+            THEN //Fuellstand (Blockfahrweise)  + Bauteilzaehlung //#2
+            dwVisuWerte3.B1 := BYTE#2; END_IF;
+        
+        IF NOT Cfg.X0 AND Cfg.X2
+            THEN //Vorschau (Typen aus FIFO bauen)
+            dwVisuWerte3.B1 := BYTE#3; END_IF;
+        
+        IF Cfg.X0 AND NOT Cfg.X1 AND Cfg.X2 
+            THEN //Vorschau + Fuellstand(Einzel)
+            dwVisuWerte3.B1 := BYTE#4; END_IF;
+            
+        IF Cfg.X0 AND Cfg.X1 AND Cfg.X2
+            THEN //Vorschau + Fuellstand(Block)
+            dwVisuWerte3.B1 := BYTE#5; END_IF;
+        
+        IF Cfg.X5 AND NOT Cfg.X1 
+            THEN //Einzelfahrweise mit Vorschaudaten (phys.FIFO)
+            dwVisuWerte3.B1 := BYTE#6; END_IF;
+        
+        IF Cfg.X5 AND Cfg.X1 
+            THEN //Blockfahrweise mit Vorschaudaten (phys.FIFO)
+            dwVisuWerte3.B1 := BYTE#7; END_IF;    
+     
+        xAUTO_Einzel_Zaehl      := FALSE;
+        xAUTO_Block_Zaehl       := FALSE;     
+        xAUTO_Block_synchron    := FALSE; //
+        xAUTO_VS_Block_Vergh    := TRUE;  //iPx_Minwert_Plus in allen FB581 ruecksetzen, wenn false und BLINK_L
+        xAUTO_VS_Einzel_Sequenz := FALSE; //AUTO Vorschau Einzelfahrweise nach Sequenz
+        xAUTO_VS_MIT_FUELLSTAND := FALSE; //AUTO Vorschau mit Fuellstandsberuecksichtigung
+        //Auswahl der Automatik Fahrweise ueber Konfig bits
+        IF (Cfg.X0 AND NOT Cfg.X2) THEN //Fuellstand
+            xAUTO_Einzel_Zaehl  := NOT Cfg.X1; //Einzelfahrweise
+            xAUTO_Block_Zaehl   := Cfg.X1;     //Blockfahrweise
+        END_IF;
+            
+        IF (Cfg.X2 AND NOT Cfg.X5) THEN //Auf FIFO fahren (Vorschau, Synchron und Sequenz Fahrweise holt Daten aus FIFO)
+            xAUTO_VS := Cfg.X2; //zu produzierende Typen auf FIFO auslesen
+            IF Cfg.X0 THEN
+                xAUTO_VS_MIT_FUELLSTAND := x_VorwahlAuto;
+            END_IF;
+        ELSE
+            xAUTO_VS := FALSE;  
+        END_IF;     
+    
+        //Fahrt mit Vorschaudaten und gesamten Ueberblick der Teile in Anlage und Speicher
+        xAUTO_VS_PLUS   := (Cfg.X5 AND NOT Cfg.X2);
+     
+     END_IF;
+
+erg_SFC20:=BLKMOV (srcblk:= ST_TYPVERWALTUNG_T, dstblk:= ST_TYPVERWALTUNG); // Zykluszeitoptimierung
+
+//Typsteuerung ein und keine Anforderung wird generiert, d.h. Speicher sind voll
+TON_Warn_keine_Anf(IN:= (Typvorwahl = 0) AND x_VorwahlStart AND NOT PROD_STEHT,PT:= T#2s);
+xF_keine_Anforderung := TON_Warn_keine_Anf.Q;
+
+TON_Start_Off(IN:= NOT x_VorwahlStart,PT:= T#45s);
+xF_Typverw_Off := TON_Start_Off.Q; 
+(****************************************************************************************)
+(*******************Anfang Signalaufbereitung Meldesystem *******************************)
+(***********************AUFRUF am Ende im SCL-BAUSTEINS**********************************)
+
+TempPointerMsys := Msys;
+TempPointerFlanken := Msys.Flanken;
+TempPointerMeldpuffer := ST_Meld;
+
+pMeldFeld.BZ := pMeldFeld.BZ OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+pMeldAbb.BZ  := pMeldAbb.BZ  OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+
+pMeldFeld.TYP := 1;// Typ:=1 ist gleich BOOL, darf nicht veraendert werden
+pMeldFeld.ANZ := 8;// Anzahl der Meldungen min. 8 Bit oder mehr, muss jedoch durch 8 teilbar sein.
+pMeldAbb.TYP := 2;// Typ:=2 ist gleich BYTE, darf nicht veraendert werden
+pMeldAbb.ANZ := 1;// Anzahl der Bytes im ARRAY min. jedoch 1 Byte
+
+
+MSYS.xF_1   := xF_TYPSTRG_NICHT_AUTO;            //'MT0/Automatikfahrweise der Typsteuerung ausgeschaltet' 
+MSYS.xF_2   := xF_keine_Anforderung;             //'MT0/keine Anforderung ein Teil zu bauen' 
+MSYS.xF_3   := xF_Typverw_Off;                   //'STE/Typverwaltung Start Aus'
+MSYS.xF_4   := Cfg.X5 AND ST_TYPVERWALTUNG_T.VorschauAus AND NOT xF_TYPSTRG_NICHT_AUTO;   //'MT0/Vorschau abgeschaltet.'
+
+MeldSend(AufrufNr :=  1
+         ,Anz_Meld :=  4 
+         ,pMeldFeld :=  pMeldFeld.BZ
+         ,pMeldAbb :=  pMeldAbb.BZ
+         ,MeldDB :=  WORD_TO_INT(pMeldDBNR.DBNR)
+         ,AenderungsID :=  AenderungsID
+         ,Integritaet :=  Integritaet
+         ,Neustart :=  Neustart
+         ); // VOID
+
+(* Verkettete Stoerung *)
+VkStoe_Out:= VkStoe_In OR xStoe;
+
+xStoe := Msys.xF_3;
+
+DB_ARG.VisuSS.Station_Stoer:= DB_ARG.VisuSS.Station_Stoer OR xStoe;
+                           
+xWARN := Msys.xF_1    
+      OR Msys.xF_2        
+      OR Msys.xF_4    
+      OR Msys.xF_5    
+      OR Msys.xF_6    
+      OR Msys.xF_7    
+      OR Msys.xF_8;
+
+DB_ARG.VisuSS.Station_Warn := DB_ARG.VisuSS.Station_Warn OR xWARN;
+                           
+xWART := FALSE;
+DB_ARG.VisuSS.Station_Wart := DB_ARG.VisuSS.Station_Wart OR xWART;
+
+Stoe := xStoe;
+Warn := xWarn;
+
+(*Verkettete Stoerung*)
+VkStoe_Out := VkStoe_In OR xStoe;                           
+(****************************************************************************************)
+(*************Ende Signalaufbereitung fuer das Meldesystem *******************************)
+(****************************************************************************************)
+
+
+
+END_FUNCTION_BLOCK
+
