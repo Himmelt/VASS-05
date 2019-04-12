@@ -10,7 +10,7 @@
 ******************************************************************************************
 **  Datum       Version     Autor               Beschreibung                            **
 ---------------------------------------------------------------------------------------------------
-    20.01.2017    3.1.09       Michael Schulz      Blink1 durch "BLINK_L" ersetzt  
+    20.01.2017    3.1.09       Michael Schulz      Blink1 durch(经过,通过) "BLINK_L" ersetzt(替换,取代)
     16.06.2016    3.1.08       Michael Schulz      Start wird bei Anwahl Hand nach TeilAutomatik Anwahl wird nicht mehr beim ersten Mal zurueckgesetzt 
                                                    Zykluszeitoptimierung: blkmov von Struktur statt Zuweisung
     04.02.2016    3.1.07       Michael Schulz      Vorrang Typen in Vorschau FIFO optimiert, Vorrang Sollwert fuellen (x6) vor zufahren optimiert
@@ -53,7 +53,7 @@
  *****************************************************************************************)
 
 
-FUNCTION_BLOCK FB_TYP_BETRIEBSARTEN_V3    // FB 583 Baustein fuer die Anlagensteuerung
+FUNCTION_BLOCK FB_TYP_BETRIEBSARTEN_V3    // FB 583 Baustein fuer die Anlagensteuerung (用于工厂控制的组件)
 TITLE   = 'Version 3.1.09'
 VERSION : '3.1'
 AUTHOR  : VASS_V05
@@ -63,7 +63,7 @@ FAMILY  : TYPKB_V3
 
 
 VAR_INPUT               
-    PROD_STEHT              : BOOL;         //Produktion steht. Ist dieses Bit gesetzt, steht die Produktion 
+    PROD_STEHT              : BOOL;         //Produktion steht(竖立,站立). Ist dieses Bit gesetzt, steht die Produktion 
                                             //in dieser ARG
     Frg_1                   : BOOL;         //Freigabe Vorwahlen
     Px_RB_INPOS             : BOOL;
