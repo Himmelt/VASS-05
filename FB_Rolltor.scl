@@ -1,0 +1,778 @@
+(*****************************************************************************************
+**                                                                                      **
+**  Copyright  2011             SIEMENS AG I IA/DT, D-90475 Nuernberg                   **
+**  All Rights Reserved         VOLKSWAGEN AG, 38436 Wolfsburg                          **
+**                              AUDI AG, D-85045 Ingolstadt                             **
+**                                                                                      **
+******************************************************************************************
+**                                                                                      **
+** Aenderungsjournal  :                                                                 **
+******************************************************************************************
+** Datum    Version        Autor        Beschreibung                                    **
+------------------------------------------------------------------------------------------
+ 25.11.15    3.4.03        Schulz       Einbau: Anzeige Bedienfreigabe auf VISU bei  "Oeffnen ohne Start in Hand"
+ 17.06.15    3.4.02        Schulz       cfg.X2: Oeffnen ohne Start in Hand
+ 06.08.13    3.4.01        Maletz       Tor oeffnen in Hand bei Stoerung angepasst
+ 03.01.12    3.4.00        Maletz       Tor oeffnen in Hand bei Stoerung Sicherheitsleiste
+                                        oder Stoerung Hintertrittschutz geaendert
+ 05.06.12    3.3.00        Maletz       Cfg.X1 Freigabe Taster Zu von Visu Neu
+ 27.12.11    3.2.00        Maletz       Out "Reset" neu Z:358 FF
+                                        Reset "xF_Bereit" Z:390 FF 
+ 15.07.11    3.1.03        Maletz       Selbshaltung bei Vorwaerts
+                                        Z:554-557
+ 28.04.11    3.1.02        Maletz       Visu um K100 erweitert
+ 09.03.11    3.1.01        Meyer        Fehlerbeseitigung Meldesystem
+ 09.03.11    3.1.00        Meyer        Datentyp von bVisuTasten auf Byte geaendert
+ 10.12.10    3.0           Meyer        Uebernahme in Siemens_VASS_Standard
+ 23.03.10    3.0           Meyer        Uebernahme in VASS_Standard
+*****************************************************************************************)
+FUNCTION_BLOCK FB_Rolltor // FB 464
+TITLE   = 'Version 3.4.03'
+VERSION : '3.4'
+AUTHOR  : VASS_V05
+NAME    : RT
+FAMILY  : RT
+
+
+
+VAR_INPUT
+    Frg_R                   : BOOL;         //Freigabe Automatik Oeffnen
+    Frg_V                   : BOOL;         //Freigabe Automatik Schliessen
+    Ver_R                   : BOOL;         //Verriegelung Oeffnen
+    Ver_V                   : BOOL;         //Verriegelung Schliessen
+    SxxR                    : BOOL;         //Taster Oeffnen
+    SxxV                    : BOOL;         //Taster Schliessen
+    SE_BExxR                : BOOL;         //Endlage offen
+    SE_BExxV                : BOOL;         //Endlage geschlossen
+    SGxxV                   : BOOL;         //Endlage geschlossen vom Sicherheitsrelais
+    FQM                     : BOOL;         //Motorschutz
+    BBM                     : BOOL;         //Motortemperatur
+    StoeFU                  : BOOL;         //FU Stoerung von Torsteuerung
+    Bereit                  : BOOL;         //Torsteuerung  Betriebsbereit
+    SLeiste                 : BOOL;         //Torsteuerung Sicherheitsleiste
+    SFKAxx                  : BOOL;         //Sicherheitsrelais Hintertrittschutz
+    SFKAxxWarn              : BOOL;         //Scanner Hintertrittschutz Stoerung oder verschmutzt
+    HKurbel                 : BOOL;         //Handkurbel gesteckt (Albany)
+    VkStoe_In               : BOOL;         //Stoerung verkettet
+    ZUeVR                   : TIME := T#1000ms; //Zeitwert Ueberwachung oeffnen / schliessen
+    ZUeEnd                  : TIME := T#1000ms; //Zeitwert Ueberwachung Endlage verlassen
+    ZUeVer                  : TIME := T#1000ms; //Zeitwert Prellen, Melderkontrolle, Verriegelungsfehler verzoegern
+    _Cfg                    : WORD;         //X0: Betrieb ohne SxxV, X1: Freigabe Taster Zu von Visu X2: Oeffnen ohne Start in Hand
+        Cfg AT _Cfg         : STRUCT        //WORD -> BOOL
+            X8              : BOOL;
+            X9              : BOOL;
+            X10             : BOOL;
+            X11             : BOOL;
+            X12             : BOOL;
+            X13             : BOOL;
+            X14             : BOOL;
+            X15             : BOOL;
+            X0              : BOOL;         //True: Betrieb ohne SxxV
+            X1              : BOOL;         //True: Freigabe Taster Zu von Visu 
+            X2              : BOOL;         //True: Oeffnen ohne Start in Hand  
+            X3              : BOOL;
+            X4              : BOOL;    
+            X5              : BOOL;
+            X6              : BOOL;
+            X7              : BOOL;
+        END_STRUCT;
+    BMK                     : STRING[25];   //BMK des Rolltors
+END_VAR
+
+VAR_OUTPUT
+    QKxxR                   : BOOL;         //Oeffnen
+    QKxxV                   : BOOL;         //Schliessen
+    PxxR                    : BOOL;         //Lampe offen
+    PxxV                    : BOOL;         //Lampe geschlossen
+    KExxR                   : BOOL;         //Endlage offen gesamt
+    KExxV                   : BOOL;         //Endlage geschlossen gesamt
+    Reset                   : BOOL;         //Reset Stoerung Torsteuerung    
+    Stoe                    : BOOL;         //Stoerung
+    VkStoe_Out              : BOOL;         //Verkette Stoerung
+    SxxR_Visu               : BOOL;         //Taster oeffnen von Visu oder extern
+    SxxV_Visu               : BOOL;         //Taster schliessen von Visu oder extern
+END_VAR
+
+VAR_IN_OUT
+    ST_BA                   : ST_Betriebsarten; //Betriebsartenstruktur
+    ST_Meld                 : Meldungspuffer;   // Meldestruktur 
+END_VAR
+
+VAR_Temp
+    TempPointerMsys         : ANY;          //Hilfsvariable
+    TempPointerFlanken      : ANY;          //Hilfsvariable
+    TempPointerMeldpuffer   : ANY;          //Hilfsvariable
+    erg_SFC20               : INT;          //Rueckgabewert SFC20
+
+    pMeldFeld AT TempPointerMsys: STRUCT 
+        BYTE0               : BYTE;         //Byte 0 
+        TYP                 : BYTE;         //Byte 1        Daten/Parametertyp 
+        ANZ                 : WORD;         //Byte 2+3      Laenge der Variablen 
+        DBNR                : WORD;         //Byte 4+5      DB-Nummer 
+        BZ                  : DWORD;        //Byte 6 bis 10 Bereichszeiger 
+    END_STRUCT; 
+                           
+    pMeldAbb AT TempPointerFlanken: STRUCT 
+        BYTE0               : BYTE;         //Byte 0 
+        TYP                 : BYTE;         //Byte 1        Daten/Parametertyp 
+        ANZ                 : WORD;         //Byte 2+3      Laenge der Variablen 
+        DBNR                : WORD;         //Byte 4+5      DB-Nummer 
+        BZ                  : DWORD;        //Byte 6 bis 10 Bereichszeiger 
+    END_STRUCT;
+                           
+    pMeldDBNR AT TempPointerMeldpuffer: STRUCT 
+        BYTE0               : BYTE;         //Byte 0 
+        TYP                 : BYTE;         //Byte 1        Daten/Parametertyp 
+        ANZ                 : WORD;         //Byte 2+3      Laenge der Variablen 
+        DBNR                : WORD;         //Byte 4+5      DB-Nummer 
+        BZ                  : DWORD;        //Byte 6 bis 10 Bereichszeiger 
+    END_STRUCT;
+END_VAR
+
+VAR
+    _dwVisuWerte1           : DWORD;        //Statusdoppelword 1 an VISU
+        dwVisuWerte1 AT _dwVisuWerte1: STRUCT   // DWORD -> BYTE
+            B3              : BYTE;
+            B2              : BYTE;
+            B1              : BYTE;
+            B0              : BYTE;
+        END_STRUCT;
+    _dwVisuWerte2           : DWORD;        //Statusdoppelword 2 an VISU
+        dwVisuWerte2 AT _dwVisuWerte2 : STRUCT  // DWORD -> BOOL
+            X24             : BOOL;
+            X25             : BOOL;
+            X26             : BOOL;
+            X27             : BOOL;
+            X28             : BOOL;
+            X29             : BOOL;
+            X30             : BOOL;
+            X31             : BOOL;
+            X16             : BOOL;
+            X17             : BOOL;
+            X18             : BOOL;
+            X19             : BOOL;
+            X20             : BOOL;    
+            X21             : BOOL;
+            X22             : BOOL;
+            X23             : BOOL;
+            X8              : BOOL;
+            X9              : BOOL;
+            X10             : BOOL;
+            X11             : BOOL;
+            X12             : BOOL;
+            X13             : BOOL;
+            X14             : BOOL;
+            X15             : BOOL;
+            X0              : BOOL;
+            X1              : BOOL;
+            X2              : BOOL;
+            X3              : BOOL;
+            X4              : BOOL;    
+            X5              : BOOL;
+            X6              : BOOL;
+            X7              : BOOL;
+        END_STRUCT;
+    bVisuTasten             : BYTE;         //Tasten von VISU
+(****************************************************************************************)
+(*****************************Anfang Variablendeklaration********************************)
+(*********************************fuers Meldesystem**************************************)
+(****************************************************************************************)
+    MSYS                    : STRUCT        
+        xF_1                : BOOL;
+        xF_2                : BOOL;
+        xF_3                : BOOL;
+        xF_4                : BOOL;
+        xF_5                : BOOL;
+        xF_6                : BOOL;
+        xF_7                : BOOL;
+        xF_8                : BOOL;
+        xF_9                : BOOL;
+        xF_10               : BOOL;
+        xF_11               : BOOL;
+        xF_12               : BOOL;
+        xF_13               : BOOL;
+        xF_14               : BOOL;
+        xF_15               : BOOL;
+        xF_16               : BOOL;
+        xF_17               : BOOL;
+        xF_18               : BOOL;
+        xF_19               : BOOL;
+        Flanken             : ARRAY[1..3] OF BYTE;    
+    END_STRUCT;
+    AenderungsID            : STRUCT
+        SNr                 : WORD;
+        ANr                 : BYTE;
+        Detail              : BYTE;
+    END_STRUCT;
+    xIntegritaet            : BOOL;
+(****************************************************************************************)
+(*****************************Ende Variablendeklaration**********************************)
+(*********************************fuers Meldesystem**************************************)
+(****************************************************************************************)
+    xF_FQM                  : BOOL;         //Fehler Motorschutz
+    xF_BBM                  : BOOL;         //Fehler Motortemperatur
+    xF_StoeFU               : BOOL;         //Fehler FU-Stoerung (Heinrichs Tore)
+    xF_Bereit               : BOOL;         //Fehler Torsteuerung nicht betriebsbereit (Albany Tore)
+    xF_HKurbel              : BOOL;         //Fehler Albany Handkurbel gesteckt
+    xF_SFKAxxWarn           : BOOL;         //Fehler Scanner Hintertrittschutz Stoerung oder verschmutzt
+    xF_Frg                  : BOOL;         //Fehler Freigabe
+    xF_BFG                  : BOOL;         //Fehler Melderkontrolle Endlagen
+    xF_EndR_voA             : BOOL;         //Fehler Endlage offen verlassen  ohne Ansteuerung
+    xF_EndV_voA             : BOOL;         //Fehler Endlage gechlossen verlassen ohne Ansteuerung
+    F_EndlOffen_Verl        : BOOL;         //Fehler Endlage Offen ohne Ansteuerung verlassen
+    xF_VerR                 : BOOL;         //Verriegelungsfehler Oeffnen
+    xF_VerV                 : BOOL;         //Verriegelungsfehler Schliessen
+    xF_EndR                 : BOOL;         //Fehler Endlage offen nicht verlassen
+    xF_EndV                 : BOOL;         //Fehler Endlage schliessen nicht verlassen
+    xF_ZuebR                : BOOL;         //Fehler Zeitueberwachung Bewegung Oeffnen
+    xF_ZuebV                : BOOL;         //Fehler Zeitueberwachung Bewegung Schliessen
+    xF_SLeiste              : BOOL;         //Fehler Sicherheitsleiste
+    F_EndlSchl_Verl         : BOOL;         //Fehler Endlage geschlossen verlassel
+    xF_SFKAxx               : BOOL;         //Fehler Hintertrittschutz
+    xF_SxxV                 : BOOL;         //Fehler Taster Tor schleissen klemmt
+    xHM_F_Stop              : BOOL;         //Stoerung Tor Stop (oeffnen und schliessen)
+    xHM_F_Stop_V            : BOOL;         //Stoerung Tor schliessen
+    xHM_Stop_V              : BOOL;         //Stop Tor schliessen
+    xHM_Oeff_Stoe           : BOOL;         //Tor oefnnen bei Stoerung Sicherheitsleiste oder Hitertrittschutz
+    xS_R                    : BOOL;         //Taster oeffnen von VISU
+    xS_V                    : BOOL;         //Taster schliessen von VISU
+    xHM_EndR                : BOOL;         //Sammelmeldung Endlage offen
+    xHM_EndV                : BOOL;         //Sammelmeldung Endlage geschlossen
+    xYR_R                   : BOOL;         //Richtungsmerker oeffnen
+    xYR_V                   : BOOL;         //Richtungsmerker schliessen
+    xHM_QKxxR               : BOOL;         //Hilfsmerker Ausgang oeffnen
+    xHM_QKxxV               : BOOL;         //Hilfsmerker Ausgang schliessen
+    bStatusVisu             : BYTE;         //Statuszeile Textnummer
+    bStatusVisuFarbe        : BYTE;         //Statuszeile Texthintergrundfarbe
+    xInit                   : BOOL;         //Initialisierungsmerker fuer Meldungen
+    R_TRIG_BAQuitt          : R_TRIG;       //Flankenauswertung
+    R_TRIG_SxxV             : R_TRIG;       //Flankenauswertung
+    F_TRIG_EndR             : F_TRIG;       //Flankenauswertung
+    F_TRIG_EndV             : F_TRIG;       //Flankenauswertung
+    TON_BFG                 : TON;          //Timer Melderkontrolle
+    TON_VerR                : TON;          //Timer Verriegelungsfehler oeffnen
+    TON_VerV                : TON;          //Timer Verriegelungsfehler schliessen
+    TON_ZUeb                : TON;          //Timer Zeitueberwachung der Bewegung
+    TON_ZUebR               : TON;          //Timer Zeitueberwachung der Bewegung oeffnen
+    TON_ZUebV               : TON;          //Timer Zeitueberwachung der Bewegung schliessen
+    TON_EndR_voA            : TON;          //Timer Endlage offen verlassen ohne Ansteuerung
+    TON_K100K_LSP           : TON;          //Timer Lastspannung ein
+    TON_SteuEin             : TON;          //Timer Steuerspannung ein
+    TON_SxxV                : TON;          //Timer Taster Schliessen  Ueberwachung
+    TON_EndV_voA            : TON;          //Timer Endlage geschlossen verlassen ohne Ansteuerung
+    TOF_KxxR                : TOF;          //Timer Tor oeffnen
+    TOF_KxxV                : TOF;          //Timer Tor schliessen
+    TOF_Quitt               : TOF;          //TIMER fuer Quitt Impuls    
+END_VAR
+
+
+(****************************************************************************************)
+(*Dieser Baustein steuert das Rolltor an                                                *)                                                                    
+(****************************************************************************************)
+
+(*Tasten von Visu pruefen*)
+If PC_AKTIV = DWORD#16#00000000 Then 
+   bVisuTasten := 0; 
+End_If;
+xS_V:=((bVisuTasten = 2) AND Cfg.X1) OR SxxV AND NOT SxxR;
+xS_R:=(bVisuTasten = 1) Or SxxR And Not SxxV;
+
+SxxR_Visu := xS_R;
+SxxV_Visu := xS_V;
+
+(*Endlage offen*)
+xHM_EndR    := SE_BExxR And (Not SE_BExxV And Not SGxxV) ;
+
+(*Endlage geschlossen*)
+xHM_EndV    := (SE_BExxV And SGxxV) And Not SE_BExxR;
+
+(*Richtungsmerker Oeffnen*)
+If xHM_QKxxR  Or Not xHM_QKxxR And Not xHM_QKxxV And xHM_EndR Then 
+    xYR_V := False;
+    xYR_R := True;   
+End_If;
+
+(*Richtungsmerker schliessen*)
+If xHM_QKxxV Or Not xHM_QKxxR And Not xHM_QKxxV And xHM_EndV Then 
+    xYR_V := True;
+    xYR_R := False;  
+End_If;
+
+
+(*------------------------------ Stoerung quittieren -----------------------------------*)
+
+(* Pos. Flanke Stoerung quittieren*)
+R_TRIG_BAQuitt(CLK:= ST_BA.Quit);
+(* Pos. Flanke Taster Tor schliessen*)
+R_TRIG_SxxV (CLK:= SxxV);
+
+(*Stoerung quittieren*)
+If R_TRIG_BAQuitt.Q Or Not ST_BA.En_Stoe Then
+    xF_FQM          := False;            (*Stoerung Motorschutz*)
+    xF_BBM          := False;            (*Stoerung Motoruebertemperatur*)
+    xF_StoeFU       := False;            (*Stoerung FU-Stoerung - nur Heinrichs Tore*)
+    xF_BFG          := False;            (*Stoerung Melderkontrolle*)
+    xF_Frg          := False;            (*Stoerung Freigabe*)
+    xF_VerR         := False;            (*Stoerung Verriegelungsfehler oeffnen*)
+    xF_VerV         := False;            (*Stoerung Verriegelungsfehler schliessen*)
+    F_EndlOffen_Verl:= False;            (*Stoerung Endlage offen verlassen ohne Ansteuerung*)
+    F_EndlSchl_Verl := False;            (*Stoerung Endlage geschlossen verlassen ohne Ansteuerung*)
+    xF_SFKAxxWarn   := False;            (*Stoerung Scanner Hintertrittschutz Stoerung oder verschmutzt*)
+End_If;
+If R_TRIG_BAQuitt.Q Or Not ST_BA.En_Stoe Or xHM_EndV And Not ST_BA.K25_FrHand Then
+    xF_EndR         := False;            (*Stoerung Endlage offen nicht verlassen*)
+    xF_EndR_voA     := False;            (*Stoerung Endlage offen verlassen ohne Ansteuerung*)
+    xF_ZuebV        := False;            (*Zeitueberwachung Bewegung schliessen*)
+End_If;
+If R_TRIG_BAQuitt.Q Or Not ST_BA.En_Stoe Or xHM_EndR And Not ST_BA.K25_FrHand Then
+    xF_EndV         := False;            (*Stoerung Endlage zu nicht verlassen*)
+    xF_EndV_voA     := False;            (*Stoerung Endlage geschlossen verlassen ohne Ansteuerung*)
+    xF_ZuebR        := False;            (*Zeitueberwachung Bewegung oeffnen*)
+End_If;
+If R_TRIG_BAQuitt.Q Or R_TRIG_SxxV.Q Or Not ST_BA.En_Stoe Then    
+    xF_Bereit       := False;            (*Stoerung Torsteuerung nicht betriebsbereit - nur Albany Tore*)
+    xF_HKurbel      := False;            (*Stoerung Handkurbel gesteckt - nur Albany Tore*)
+    xF_SLeiste      := False;            (*Stoerung Sicherheitsleiste*)
+    xF_SFKAxx       := False;            (*Stoerung Hintertrittschutz*)
+    xF_SxxV         := False;            (*Stoerung Taster Tor schliessen klemmt*)
+    xF_ZuebV        := False;            (*Zeitueberwachung Bewegung schliessen*)
+    xF_ZuebR        := False;            (*Zeitueberwachung Bewegung oeffnen*)
+End_If;
+
+TOF_Quitt (IN:= (R_TRIG_BAQuitt.Q Or R_TRIG_SxxV.Q)  And Not Bereit, PT:=T#500ms);     (* Impuls des Quittiersignals bilden *)
+Reset := TOF_Quitt.Q;
+
+
+(*------------------------------ Stoerungen bilden -------------------------------------*)
+
+(*Steuerung Ein 3s zeitverzoegert*)
+TON_SteuEin  (IN:=STEU_EIN,PT:=T#3s);
+
+(*Lastspannung Ein 10s zeitverzoegert*)        
+TON_K100K_LSP(IN:=ST_BA.K100K_LSP,PT:=T#10s);
+
+(*Stoerung Motorschutz*)
+If Not FQM And ST_BA.En_Stoe Then
+    xF_FQM := TRUE;
+End_If; 
+
+(*Stoerung Motoruebertemperatur*)
+If Not BBM And TON_SteuEin.Q Then
+    xF_BBM := TRUE; 
+End_If; 
+
+(*Stoerung FU-Stoerung - nur Heinrichs Tore*)
+If StoeFU And TON_SteuEin.Q Then
+  xF_StoeFU  := True;
+End_If;
+
+(*Stoerung Torsteuerung nicht betriebsbereit - nur Albany Tore*)
+If Not Bereit And TON_SteuEin.Q And TON_K100K_LSP.Q Then
+  xF_Bereit := True ;
+End_If;
+
+If Bereit Then
+   xF_Bereit := False ;
+End_If;
+
+(*Stoerung Handkurbel gesteckt - nur Albany Tore*)
+If HKurbel Then
+   xF_HKurbel := True;
+End_If;
+
+(*Stoerung Melderkontrolle*)
+TON_BFG(IN:= SE_BExxR And (SE_BExxV Or SGxxV) ,PT:= ZUeVer);
+If TON_BFG.Q Then
+    xF_BFG:= True;
+End_If;
+
+(*Stoerung Freigabe*)
+If ST_BA.K26_FrAuto And Frg_R And Frg_V Then
+    xF_Frg    := True;
+End_If;
+
+(*Stoerung Sicherheitsleiste wenn Rolltor schliesst und SLeiste kommt*)
+If  QKxxV And TON_SteuEin.Q And SLeiste Then
+   xF_SLeiste := TRUE;
+   xHM_Oeff_Stoe := TRUE;
+End_If;  
+ 
+(*Stoerung Hintertrittschutz wenn Rolltor schliesst und SFKAxx kommt*)
+If QKxxV And TON_SteuEin.Q And Not SFKAxx Then
+   xF_SFKAxx := TRUE;
+   xHM_Oeff_Stoe := TRUE;
+End_If;  
+
+(*Scanner Hintertrittschutz Stoerung oder verschmutzt*)
+If Not SFKAxxWarn Then
+    xF_SFKAxxWarn := True;
+End_If;
+
+(*Stoerung Taster Tor schliessen klemmt*)
+TON_SxxV (IN:=SxxV ,PT:= ZUeVR);        
+If TON_SxxV.Q Then
+    xF_SxxV := True;
+End_If;
+
+(*Stoerung Verriegelungsfehler oeffnen*)
+TON_VerR(IN:= Frg_R And Not Ver_R And Not xHM_EndR & ST_BA.K26_FrAuto,PT:= ZUeVer);
+If TON_VerR.Q Then
+    xF_VerR:= True;
+End_If;
+
+(*Stoerung Verriegelungsfehler schliessen*)
+TON_VerV(IN:= Frg_V And Not Ver_V And Not xHM_EndV & ST_BA.K26_FrAuto,PT:= ZUeVer);
+If TON_VerV.Q Then
+    xF_VerV:= True;
+End_If;
+
+(*Stoerung Endlage offen verlassen ohne Ansteuerung*)
+F_TRIG_EndR(CLK:= xHM_EndR);
+
+If F_TRIG_EndR.Q Then
+    F_EndlOffen_Verl := TRUE;
+Elsif xHM_EndR OR xHM_EndV Then
+    F_EndlOffen_Verl := FALSE;
+End_If;
+
+TON_EndR_voA(IN:=Not QKxxR And Not QKxxV And F_EndlOffen_Verl
+                  And Not xF_ZuebV And Not xF_ZuebR ,PT:= ZUeVer);
+
+If TON_EndR_voA.Q And ST_BA.K9_BaAuto  Then
+    xF_EndR_voA:= True;
+End_If;
+
+(*Stoerung Endlage geschlossen verlassen ohne Ansteuerung*)
+F_TRIG_EndV(CLK:= xHM_EndV);
+
+If F_TRIG_EndV.Q Then
+   F_EndlSchl_Verl := TRUE;
+Elsif xHM_EndR OR xHM_EndV Then
+   F_EndlSchl_Verl := FALSE;
+End_If;
+
+TON_EndV_voA(IN:=Not QKxxR And Not QKxxV And F_EndlSchl_Verl
+                  And Not xF_ZuebV And Not xF_ZuebR, PT:= ZUeVer);
+
+If TON_EndV_voA.Q And ST_BA.K9_BaAuto Then
+    xF_EndV_voA:= True;
+End_If;
+
+(*Zeitueberwachung Endlage nicht verlassen*)
+TON_ZUeb(IN:= QKxxR And xHM_EndV Or QKxxV And xHM_EndR,PT:= ZUeEnd);
+(*Stoerung Endlage offen nicht verlassen*)
+If TON_ZUeb.Q And QKxxV And xHM_EndR Then
+    xF_EndR:= True;
+End_If;
+(*Stoerung Endlage geschlossen nicht verlassen*)
+If TON_ZUeb.Q And QKxxR And xHM_EndV Then
+    xF_EndV:= True;
+End_If;
+
+(*Zeitueberwachung Bewegung oeffnen*)
+TON_ZUebR(IN:= QKxxR And Not xHM_EndR,PT:= ZUeVR);
+(*Stoerung Zeitueberwachung Bewegung oeffnen*)
+If TON_ZUebR.Q Then
+    xF_ZuebR:= True;
+End_If;
+
+(*Zeitueberwachung Bewegung schliessen*)
+TON_ZUebV(IN:= QKxxV And Not xHM_EndV,PT:= ZUeVR);
+(*Stoerung Zeitueberwachung Bewegung schliessen*)
+If TON_ZUebV.Q Then
+    xF_ZuebV:= True;
+End_If;
+
+
+(*------------------------------ Sammelstorungen ---------------------------------------*)
+
+(*Sammelstoerung Tor Stop*)
+xHM_F_Stop := xF_FQM                 (*Stoerung Motorschutz*)
+           Or xF_BBM                 (*Stoerung Motoruebertemperatur*)
+           Or xF_StoeFU              (*Stoerung FU-Stoerung - nur Heinrichs Tore*)
+           Or xF_Bereit              (*Stoerung Torsteuerung nicht betriebsbereit - nur Albany Tore*)
+           Or xF_HKurbel             (*Stoerung Handkurbel gesteckt - nur Albany Tore*)
+           Or xF_BFG                 (*Stoerung Melderkontrolle*)
+           OR xF_Frg                 (*Stoerung Freigabe*)
+           OR xF_VerR                (*Stoerung Verriegelungsfehler oeffnen*)
+           OR xF_EndR                (*Stoerung Endlage offen nicht verlassen*)
+           OR xF_EndR_voA            (*Stoerung Endlage offen verlassen ohne Ansteuerung*)
+           OR xF_ZuebR               (*Zeitueberwachung Bewegung oeffnen*)
+           OR xF_VerV                (*Stoerung Verriegelungsfehler schliessen*)
+           OR xF_EndV                (*Stoerung Endlage offen nicht verlassen*)
+           OR xF_EndV_voA            (*Stoerung Endlage geschlossen verlassen ohne Ansteuerung*)
+           OR xF_ZuebV;              (*Zeitueberwachung Bewegung schliessen*)
+
+(*Sammelstoerung Tor schliessen*)
+xHM_F_Stop_V := xHM_F_Stop           (*Stoerung Tor Stop*)
+           OR xF_SLeiste             (*Stoerung Sicherheitsleiste*)
+           OR xF_SFKAxx              (*Stoerung Hintertrittschutz*)
+           OR xF_SxxV;               (*Stoerung Taster Tor schliessen klemmt*)
+
+(*Sammelstoerung*)          
+Stoe      := xHM_F_Stop_V                              
+          OR xF_SFKAxxWarn;          (*Scanner Hitertrittschutz Stoerung oder verschmutzt*)
+
+(*Verkettete Stoerung*)
+VkStoe_Out:= VkStoe_In OR Stoe;
+
+(*Melderkontrolle*)
+IF xF_BFG THEN
+    ST_BA.K48_MEL:=True;
+END_IF;
+
+
+(*------------------------------ Befehlsausgabe ----------------------------------------*)
+
+(*Tor Stop, verhindert das automatische Schliessen des Tores nach Stoerung*)
+IF R_TRIG_SxxV.Q OR (R_TRIG_BAQuitt.Q AND Cfg.X0) THEN
+     xHM_Stop_V := False;
+END_IF;
+IF Stoe THEN
+    xHM_Stop_V := True;
+END_IF;
+
+(*Tor oeffnen in Automatik/Hand bei Stoerung Sicherheitsleiste oder Stoerung Hintertrittschutz*)
+IF (*ST_BA.K25_FrHand Or *)
+    ((ST_BA.K26_FrAuto OR ST_BA.K25_FrHand) AND xHM_EndR AND (R_TRIG_SxxV.Q OR (R_TRIG_BAQuitt.Q AND Cfg.X0))) THEN
+    xHM_Oeff_Stoe := False;
+END_IF;
+
+(*Ausgaenge Vorbereiten*)
+xHM_QKxxR := NOT xHM_F_Stop AND Ver_R AND NOT xHM_EndR
+             AND (((ST_BA.K25_FrHand OR (ST_BA.K23_BaHand AND (ST_BA.K40 OR Cfg.X2))) AND xS_R)
+               OR (ST_BA.K26_FrAuto AND (Frg_R OR xHM_Oeff_Stoe))
+               OR (ST_BA.K25_FrHand AND xHM_Oeff_Stoe)
+               OR ((ST_BA.K26_FrAuto OR ST_BA.K25_FrHand) AND QKxxR));
+
+xHM_QKxxV := NOT xHM_F_Stop_V AND Ver_V AND NOT xHM_EndV
+             AND (((ST_BA.K26_FrAuto AND Frg_V AND NOT xHM_Oeff_Stoe AND NOT xHM_Stop_V AND (xS_V OR Cfg.X0))
+               OR  (ST_BA.K25_FrHand AND xS_V AND NOT xHM_Oeff_Stoe))
+               OR ((ST_BA.K26_FrAuto OR ST_BA.K25_FrHand) AND QKxxV));
+           
+TOF_KxxR(IN:= xHM_QKxxR, PT:= T#1s);
+TOF_KxxV(IN:= xHM_QKxxV, PT:= T#1s);
+
+(* Ausgaenge Schreiben *)
+QKxxR    := xHM_QKxxR AND NOT TOF_KxxV.Q AND STEU_EIN ;
+QKxxV    := xHM_QKxxV AND NOT TOF_KxxR.Q AND STEU_EIN ;
+PxxR    := xHM_EndR OR LTEST OR BLINK_L AND (xF_Frg OR xF_BFG OR xF_EndR_voA OR xF_VerR
+        OR xF_EndR OR xF_ZuebR OR Frg_R);
+PxxV    := xHM_EndV OR LTEST OR BLINK_L AND (xF_Frg OR xF_BFG OR xF_EndV_voA OR xF_VerV
+        OR xF_EndV OR xF_ZuebV OR Frg_V);
+KExxR    := xHM_EndR;
+KExxV     := xHM_EndV;
+
+
+(*------------------------------ Signale fuer Visu aufbereiten -------------------------*)
+
+IF xF_FQM THEN                          (*Stoerung Motorschutz*)
+  bStatusVisu           := Byte#2;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_BBM         THEN               (*Stoerung Motoruebertemperatur*)
+  bStatusVisu           := Byte#3;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_StoeFU     THEN                (*Stoerung FU-Stoerung - nur Heinrichs Tore*)
+  bStatusVisu           := Byte#4;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_SLeiste        THEN            (*Stoerung Sicherheitsleiste*)
+  bStatusVisu           := Byte#5;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_SFKAxx      THEN               (*Stoerung Hintertrittschutz*)
+  bStatusVisu           := Byte#6;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_SFKAxxWarn    THEN             (*Scanner Hitertrittschutz Stoerung oder verschmutzt*)
+  bStatusVisu           := Byte#7;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_SxxV           THEN            (*Stoerung Taster Tor schliessen klemmt*)
+  bStatusVisu           := Byte#8;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_Bereit       THEN              (*Stoerung Torsteuerung nicht betriebsbereit - nur Albany Tore*)
+  bStatusVisu           := Byte#9;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF xF_HKurbel       THEN             (*Stoerung Handkurbel gesteckt - nur Albany Tore*)
+  bStatusVisu           := Byte#10;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF Stoe               THEN           (*Stoerung*)
+  bStatusVisu           := Byte#11;
+  bStatusVisuFarbe      := Byte#3;
+ELSIF SGxxV      THEN                   (*Endschalter KG Tor geschlossen*) 
+ bStatusVisu           := Byte#1;
+ bStatusVisuFarbe      := Byte#1;
+ELSE
+ bStatusVisu           := Byte#0;
+ bStatusVisuFarbe      := Byte#0;
+END_IF;
+
+dwVisuWerte1.B2 := bStatusVisu;
+dwVisuWerte1.B3 := bStatusVisuFarbe;
+
+ 
+dwVisuWerte2.X0  := xHM_EndR;
+dwVisuWerte2.X1  := xHM_EndV;
+dwVisuWerte2.X2  := xHM_QKxxR;
+dwVisuWerte2.X3  := xHM_QKxxV;
+dwVisuWerte2.X7  := Stoe;
+dwVisuWerte2.X8  := Frg_R;
+dwVisuWerte2.X9  := Frg_V;
+dwVisuWerte2.X10 := Ver_R AND ((ST_BA.K25_FrHand OR (ST_BA.K23_BaHand AND (ST_BA.K40 OR Cfg.X2))) OR ST_BA.K26_FrAuto);
+dwVisuWerte2.X11 := Ver_V AND ((ST_BA.K25_FrHand OR (ST_BA.K23_BaHand AND (ST_BA.K40 OR Cfg.X2))) OR ST_BA.K26_FrAuto) AND Cfg.X1 ;
+dwVisuWerte2.X24 := True;                 //K100 einblenden
+dwVisuWerte2.X25 := ST_BA.K100K_LSP;      //K100 Gruen
+dwVisuWerte2.X26 := False;                //K100 Rot blink
+
+
+(*------------------------------ Fehlermeldungen in Meldesystem eintragen ------------------------------
+
+If Not xInit Or ST_Meld.Select_all Then
+    
+    FB_Melden_10_1.M_txt1    := 'STE/Stoerung Motorschutz';
+    FB_Melden_10_1.M_txt2    := 'STE/Stoerung Motortemperatur';    
+    FB_Melden_10_1.M_txt3    := 'STE/Stoerung FU';    
+    FB_Melden_10_1.M_txt4    := 'STE/Stoerung Torsteuerung nicht bereit';
+    FB_Melden_10_1.M_txt5    := 'SOE/Stoerung Handkurbel gesteckt';    
+    FB_Melden_10_1.M_txt6    := 'STE/Stoerung Melderkontrolle';
+    FB_Melden_10_1.M_txt7    := 'STE/Stoerung Freigabe';
+    FB_Melden_10_1.M_txt8    := 'STE/Verriegelungsfehler fuer Oeffnen';
+    FB_Melden_10_1.M_txt9    := 'STE/Endl. Offen nicht verlassen';
+    FB_Melden_10_1.M_txt10   := 'STE/Endl. Offen verlassen ohne Anst.';
+    FB_Melden_10_1.Kontext   := 'FB_Rolltor_1';
+    FB_Melden_10_1.BMK      := BMK;
+
+    FB_Melden_10_2.M_txt1    := 'STE/Zeitueberwachung Bewegung Oeffnen';
+    FB_Melden_10_2.M_txt2    := 'STE/Verriegelungsfehler fuer Schliessen';
+    FB_Melden_10_2.M_txt3    := 'STE/Endl. Geschlossen nicht verlassen';
+    FB_Melden_10_2.M_txt4    := 'STE/Endl. Geschlossen verlassen ohne Anst.';
+    FB_Melden_10_2.M_txt5    := 'STE/Zeitueberwachung Bewegung Schliessen' ;
+    FB_Melden_10_2.M_txt6    := 'STE/Stoerung Sicherheitsleiste';
+    FB_Melden_10_2.M_txt7    := 'STE/Stoerung Hintertrittschutz';
+    FB_Melden_10_2.M_txt8    := 'STE/Stoerung Taster Tor schliessen klemmt';
+    FB_Melden_10_2.M_txt9    := 'STE/Scanner Stoerung oder verschmutzt';
+    FB_Melden_10_2.Kontext   := 'FB_Rolltor_2';
+    FB_Melden_10_2.BMK      := BMK;
+
+    FB_Melden_4_1.M_txt1       := 'LZF/Ansteuerung Oeffnen';
+    FB_Melden_4_1.M_txt2       := 'LZF/Ansteuerung Schliessen';
+    FB_Melden_4_1.Frg_LZM      := True;
+    FB_Melden_4_1.Quit         := True;
+    FB_Melden_4_1.Kontext      := 'FB_Rolltor_3';
+    FB_Melden_4_1.BMK         := BMK;
+
+    xInit              := True; 
+End_If;
+
+FB_Melden_10_1(EN1    :=  xF_FQM,
+                 EN2    :=  xF_BBM,
+                 EN3    :=  xF_StoeFU,
+                 EN4    :=  xF_Bereit,
+                 EN5    :=  xF_HKurbel,
+                 EN6    :=  xF_BFG,
+                 EN7    :=  xF_Frg,
+                 EN8    :=  xF_VerR,
+                 EN9    :=  xF_EndR,
+                 EN10   :=  xF_EndR_voA,
+            ST_Meld :=  ST_Meld);
+ST_Meld := FB_Melden_10_1.ST_Meld;
+
+FB_Melden_10_2(EN1    :=  xF_ZuebR,                  
+                 EN2    :=  xF_VerV,
+                 EN3    :=  xF_EndV,
+                 EN4    :=  xF_EndV_voA,
+                 EN5    :=  xF_ZuebV,
+                 EN6    :=  xF_SLeiste,
+                 EN7    :=  xF_SFKAxx,
+                 EN8    :=  xF_SxxV,    
+                 EN9    :=  xF_SFKAxxWarn,
+            ST_Meld :=  ST_Meld);
+ST_Meld := FB_Melden_10_2.ST_Meld;
+
+(* Laufzeitmessung der Ausgangssignale *)
+FB_Melden_4_1(EN1       :=  QKxxR ,    
+              EN2       :=  QKxxV,
+            ST_Meld :=  ST_Meld);
+ST_Meld := FB_Melden_4_1.ST_Meld;
+*)
+
+    
+(**SIEMENS***************************************************************************)
+(************Anfang Signalaufbereitung Meldesystem fuer den Siemensteil***************)
+(***********************AUFRUF am Ende im SCL-BAUSTEINS******************************)
+
+TempPointerMsys := Msys;
+TempPointerFlanken := Msys.Flanken;
+TempPointerMeldpuffer := ST_Meld;
+
+pMeldFeld.BZ := pMeldFeld.BZ OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+pMeldAbb.BZ  := pMeldAbb.BZ  OR 16#1000000; // Speicherbereich im Bereichszeiger von 84 (DB) auf 85 (DI) aendern
+
+pMeldFeld.TYP := 1; // Typ:=1 ist gleich BOOL
+pMeldFeld.ANZ := 24;// Anzahl der Meldungen min. 8 Bit oder mehr, muss jedoch durch 8 teilbar sein.
+pMeldAbb.TYP  := 2; // Typ:=2 ist gleich BYTE
+pMeldAbb.ANZ  := 3; // Anzahl der Bytes im ARRAY min. jedoch 1 Byte
+    
+MSYS.xF_1     :=xF_FQM;             //STE/Stoerung Motorschutz'
+MSYS.xF_2     :=xF_BBM;             //STE/Stoerung Motortemperatur'    
+MSYS.xF_3     :=xF_StoeFU;          //STE/Stoerung FU'    
+MSYS.xF_4     :=xF_Bereit;          //STE/Stoerung Torsteuerung nicht bereit'
+MSYS.xF_5     :=xF_HKurbel;         //SOE/Stoerung Handkurbel gesteckt'    
+MSYS.xF_6     :=xF_BFG;             //STE/Stoerung Melderkontrolle'
+MSYS.xF_7     :=xF_Frg;             //STE/Stoerung Freigabe'
+MSYS.xF_8     :=xF_VerR;            //STE/Verriegelungsfehler fuer Oeffnen'
+MSYS.xF_9     :=xF_EndR;            //STE/Endl. Offen nicht verlassen'
+MSYS.xF_10    :=xF_EndR_voA;        //STE/Endl. Offen verlassen ohne Anst.'
+MSYS.xF_11    :=xF_ZuebR;           //STE/Zeitueberwachung Bewegung Oeffnen'
+MSYS.xF_12    :=xF_VerV;            //STE/Verriegelungsfehler fuer Schliessen'
+MSYS.xF_13    :=xF_EndV;            //STE/Endl. Geschlossen nicht verlassen'
+MSYS.xF_14    :=xF_EndV_voA;        //STE/Endl. Geschlossen verlassen ohne Anst.'
+MSYS.xF_15    :=xF_ZuebV;           //STE/Zeitueberwachung Bewegung Schliessen' 
+MSYS.xF_16    :=xF_SLeiste;         //STE/Stoerung Sicherheitsleiste'
+MSYS.xF_17    :=xF_SFKAxx;          //STE/Stoerung Hintertrittschutz'
+MSYS.xF_18    :=xF_SxxV;            //STE/Stoerung Taster Tor schliessen klemmt'
+MSYS.xF_19    :=xF_SFKAxxWarn;      //STE/Scanner Stoerung oder verschmutzt'
+
+MeldSend(AufrufNr       := 1
+         ,Anz_Meld      := 19 
+         ,pMeldFeld     := pMeldFeld.BZ
+         ,pMeldAbb      := pMeldAbb.BZ
+         ,MeldDB        := WORD_TO_INT(pMeldDBNR.DBNR)
+         ,AenderungsID  := AenderungsID
+         ,Integritaet   := xIntegritaet
+         ,Neustart      := Neustart
+         ); // VOID
+xInit := True;
+
+// Vorlage fuer Stationsbezogene Bausteine
+DB_ARG.VisuSS.Station_Stoer:= DB_ARG.VisuSS.Station_Stoer 
+                            OR Msys.xF_1    
+                            OR Msys.xF_2    
+                            OR Msys.xF_3    
+                            OR Msys.xF_4    
+                            OR Msys.xF_5    
+                            OR Msys.xF_6    
+                            OR Msys.xF_7    
+                            OR Msys.xF_8    
+                            OR Msys.xF_9    
+                            OR Msys.xF_10   
+                            OR Msys.xF_11   
+                            OR Msys.xF_12   
+                            OR Msys.xF_13   
+                            OR Msys.xF_14   
+                            OR Msys.xF_15   
+                            OR Msys.xF_16   
+                            OR Msys.xF_17   
+                            OR Msys.xF_18   
+                            OR Msys.xF_19;                           
+DB_ARG.VisuSS.Station_Warn := DB_ARG.VisuSS.Station_Warn 
+                           OR FALSE ;
+                           
+DB_ARG.VisuSS.Station_Wart := DB_ARG.VisuSS.Station_Wart 
+                           OR FALSE ;
+                           
+                           
+
+(**SIEMENS***************************************************************************)
+(*************Ende Signalaufbereitung Meldesystem fuer den Siemensteil****************)
+(************************************************************************************)
+
+END_FUNCTION_BLOCK
+
