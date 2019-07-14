@@ -36,12 +36,12 @@ FAMILY  : RT
 
 
 VAR_INPUT
-    Frg_R                   : BOOL;         //Freigabe Automatik Oeffnen
-    Frg_V                   : BOOL;         //Freigabe Automatik Schliessen
-    Ver_R                   : BOOL;         //Verriegelung Oeffnen
-    Ver_V                   : BOOL;         //Verriegelung Schliessen
-    SxxR                    : BOOL;         //Taster Oeffnen
-    SxxV                    : BOOL;         //Taster Schliessen
+    Frg_R                   : BOOL;         //Freigabe Automatik Oeffnen        释放开门
+    Frg_V                   : BOOL;         //Freigabe Automatik Schliessen     释放关门
+    Ver_R                   : BOOL;         //Verriegelung Oeffnen              手动开门条件
+    Ver_V                   : BOOL;         //Verriegelung Schliessen           手动关门条件
+    SxxR                    : BOOL;         //Taster Oeffnen                    开门按钮(按键)
+    SxxV                    : BOOL;         //Taster Schliessen                 关门按钮(按键)
     SE_BExxR                : BOOL;         //Endlage offen
     SE_BExxV                : BOOL;         //Endlage geschlossen
     SGxxV                   : BOOL;         //Endlage geschlossen vom Sicherheitsrelais
